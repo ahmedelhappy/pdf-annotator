@@ -186,6 +186,21 @@ in. Everything after is one commit per change.
   the page to render before converting through its viewport. `alt+arrowup` and
   `alt+arrowdown` already move a page, and arrow keys normalise to `arrowup`,
   so `alt+up` would never have fired.
+- A text box's height is its words'. There is no vertical resize: the side
+  handles set the width, the corner handles scale the type, and the height is
+  measured from the rendered block and followed. Dragging a height by hand left
+  text either hanging out of the bottom or floating in empty space.
+- Editing a text box is a `contenteditable`, not a textarea, so the markdown
+  takes effect as you type. Chrome's plaintext-only mode keeps the box in one
+  node with newline characters, so there are no line elements to style: the
+  lines are rebuilt on every keystroke and the caret put back by character
+  offset, exact because the model is one child per line and one text node per
+  child. Rebuilding is skipped while an input method composes. Inline emphasis
+  still settles on deselect, since re-cutting spans under the caret is the one
+  thing that does move it.
+- Anything that must sit above the page uses z-index 4000. The selection frame
+  is 1000 and its menu 3000, so Tailwind's `z-50` was not enough and a selection
+  drew across the shortcut sheet.
 - A text box reads a small slice of markdown: `#` to `###`, `-`/`*`/`+` bullets,
   `1.` numbers, `[ ]` and `[x]`, two spaces per nesting level, `*italic*` and
   `**bold**`. Editing shows the raw text. Underscores are deliberately not
