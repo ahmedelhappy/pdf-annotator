@@ -30,7 +30,7 @@ export default function CommandPalette({ ctx, onClose }: { ctx: Ctx; onClose: ()
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 z-50 flex items-start justify-center pt-24 px-4"
+      className="fixed inset-0 bg-black/60 z-[4000] flex items-start justify-center pt-24 px-4"
       onClick={onClose}
     >
       <div

@@ -4,11 +4,11 @@ import { translate } from './lib/geometry';
 import type { ShortcutPrefs } from './lib/shortcuts';
 import type { Annotation, Preset, SearchMatch, Style, Tool } from './types';
 
-/** Shipped swatches. Any of them can be redefined and the choice is kept. */
-export const PALETTE = [
-  '#e11d48', '#2563eb', '#16a34a', '#eab308',
-  '#111827', '#f97316', '#a855f7', '#06b6d4',
-];
+/**
+ * Shipped swatches. Any of them can be redefined and the choice is kept. Five
+ * and the automatic one: a longer row was more than the toolbar had room for.
+ */
+export const PALETTE = ['#e11d48', '#2563eb', '#16a34a', '#eab308', '#111827'];
 
 const PALETTE_KEY = 'pdf-annotator.palette';
 

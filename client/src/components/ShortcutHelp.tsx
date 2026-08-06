@@ -47,7 +47,7 @@ export default function ShortcutHelp({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 sm:p-6"
+      className="fixed inset-0 bg-black/70 z-[4000] flex items-center justify-center p-4 sm:p-6"
       onClick={onClose}
     >
       <div
