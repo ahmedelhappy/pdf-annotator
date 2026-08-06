@@ -1,0 +1,8 @@
+node_modules/
+dist/
+server/storage/
+server/.env
+server/fonts/*.ttf
+server/fonts/*.otf
+*.log
+sample.pdf

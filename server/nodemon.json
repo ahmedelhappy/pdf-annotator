@@ -1,0 +1,5 @@
+{
+  "ignore": ["storage/*", "storage/**", "*.bak"],
+  "delay": 300,
+  "_comment": "storage holds the PDFs, the page-op snapshots and their .json sidecars. Without this nodemon sees every page op as a code change and restarts the server in the middle of the request."
+}
