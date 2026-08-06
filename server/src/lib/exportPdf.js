@@ -3,6 +3,9 @@ import path from 'node:path';
 import { PDFDocument, rgb, StandardFonts, BlendMode, degrees } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { strokeOutline } from './ink.js';
+import {
+  blockSize, blockText, HEADING_GAP, indentFor, markerFor, markerWidth, parseMarkdown,
+} from './markdown.js';
 import { ASSET_DIR } from './storage.js';
 
 const FONT_DIR = path.resolve('./fonts');
@@ -65,6 +68,160 @@ export function spinAbout(p, about, deg) {
   return { x: about.x + dx * cos - dy * sin, y: about.y + dx * sin + dy * cos };
 }
 
+/** The face a run wants, from the four Helvetica variants. */
+export function faceFor(run, heading, faces) {
+  const bold = run.bold || heading;
+  if (bold && run.italic) return faces.boldItalic;
+  if (bold) return faces.bold;
+  if (run.italic) return faces.italic;
+  return faces.plain;
+}
+
+/**
+ * Greedy word wrap over a block's runs, keeping each run's face. Returns lines
+ * of `{ text, font }` pieces. pdf-lib can wrap a plain string on its own, but
+ * not one where the face changes partway along, and not with a marker holding a
+ * column open on the left.
+ */
+export function wrapRuns(runs, width, size, heading, faces) {
+  const lines = [];
+  let line = [];
+  let used = 0;
+
+  const room = width > 0 ? width : Infinity;
+
+  for (const run of runs) {
+    const font = faceFor(run, heading, faces);
+    // Split on spaces but keep them, so wrapping does not eat the gaps.
+    for (const piece of String(run.text).split(/(\s+)/)) {
+      if (!piece) continue;
+      let w;
+      try {
+        w = font.widthOfTextAtSize(piece, size);
+      } catch {
+        // A glyph Helvetica has no place for. Leave it out rather than throw:
+        // the caller falls back to an embedded face for the whole box.
+        throw new RangeError('unsupported glyph');
+      }
+      const blank = /^\s+$/.test(piece);
+      if (used + w > room && line.length && !blank) {
+        lines.push(line);
+        line = [];
+        used = 0;
+      }
+      // A run of spaces at the start of a fresh line is dropped, the way a
+      // wrapped paragraph reads.
+      if (blank && !line.length) continue;
+      line.push({ text: piece, font });
+      used += w;
+    }
+  }
+  lines.push(line);
+  // Neighbouring pieces in the same face become one draw. Wrapping works word by
+  // word, but drawing word by word puts every word in the file as its own text
+  // item, so selecting or copying from the exported PDF comes out in pieces.
+  return lines.map(coalesce);
+}
+
+/** Joins adjacent pieces that share a font. */
+export function coalesce(line) {
+  const out = [];
+  for (const piece of line) {
+    const last = out[out.length - 1];
+    if (last && last.font === piece.font) last.text += piece.text;
+    else out.push({ text: piece.text, font: piece.font });
+  }
+  return out;
+}
+
+/**
+ * Draws a text box as markdown: headings larger and bold, bullets, numbers and
+ * checkboxes in a column of their own, and bold and italic runs inside a line.
+ * The same parse the page reads, so a box looks the same on paper as on screen.
+ *
+ * Anything Helvetica cannot set falls back to the embedded unicode face for the
+ * whole box, with the markdown flattened, which is the old behaviour and the
+ * only one available without four faces of that font.
+ */
+function drawMarkdown(page, o) {
+  const { text, x, y, width, size, color, rotate, faces, unicode } = o;
+  const blocks = parseMarkdown(text);
+
+  try {
+    let dy = 0;
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      const heading = b.kind === 'h1' || b.kind === 'h2' || b.kind === 'h3';
+      const fs = blockSize(b, size);
+      const lead = fs * 1.35;
+      if (heading && i > 0) dy += fs * HEADING_GAP;
+
+      const marker = markerFor(b);
+      const indent = indentFor(b, size);
+      const lines = wrapRuns(b.runs, width - indent, fs, heading, faces);
+
+      for (let n = 0; n < lines.length; n++) {
+        // The first line of a list item carries the marker, in the column the
+        // indent reserved, so a wrapped line sits under the words not the dot.
+        if (marker && n === 0) {
+          page.drawText(marker, {
+            x: x + indent - markerWidth(b, size),
+            y: y - dy,
+            size: fs,
+            font: faces.plain,
+            color,
+            rotate,
+          });
+        }
+        let cursor = x + indent;
+        for (const piece of lines[n]) {
+          page.drawText(piece.text, {
+            x: cursor,
+            y: y - dy,
+            size: fs,
+            font: piece.font,
+            color,
+            rotate,
+          });
+          cursor += piece.font.widthOfTextAtSize(piece.text, fs);
+        }
+        dy += lead;
+      }
+      // An empty line still takes a line, the way it does in the box.
+      if (!lines.length) dy += lead;
+    }
+    return;
+  } catch (err) {
+    if (!(err instanceof RangeError)) {
+      console.warn('[export] Text skipped:', err.message);
+      return;
+    }
+  }
+
+  // Non-Latin: one face, no markdown, which is all the embedded font can do.
+  if (!unicode) {
+    console.warn('[export] Skipped non-Latin text. Add a font to server/fonts.');
+    return;
+  }
+  const flat = blocks
+    .map((b) => (markerFor(b) ? `${markerFor(b)} ${blockText(b)}` : blockText(b)))
+    .join('\n');
+  try {
+    page.drawText(flat, {
+      x,
+      y,
+      size,
+      color,
+      font: unicode,
+      lineHeight: size * 1.35,
+      rotate,
+      ...(width > 0 ? { maxWidth: width } : {}),
+    });
+  } catch (e) {
+    console.warn('[export] Text skipped:', e.message);
+  }
+}
+
 /**
  * Hidden pages are dropped from the exported copy. Hiding is meant to take a
  * page out of the document you hand over without destroying it, so it has to
@@ -75,6 +232,14 @@ export async function buildAnnotatedPdf(filePath, annotations, hiddenPages = [])
   pdf.registerFontkit(fontkit);
 
   const helvetica = await pdf.embedFont(StandardFonts.Helvetica);
+  // Bold and italic for markdown emphasis, and bold for headings. All four are
+  // built into every PDF reader, so nothing has to be embedded.
+  const faces = {
+    plain: helvetica,
+    bold: await pdf.embedFont(StandardFonts.HelveticaBold),
+    italic: await pdf.embedFont(StandardFonts.HelveticaOblique),
+    boldItalic: await pdf.embedFont(StandardFonts.HelveticaBoldOblique),
+  };
   let unicode = null;
   const bytes = await unicodeFontBytes();
   if (bytes) {
@@ -149,31 +314,29 @@ export async function buildAnnotatedPdf(filePath, annotations, hiddenPages = [])
 
       const x = a.data.x;
       const y = a.type === 'note' ? a.data.y : a.data.y + a.data.h - size;
-      const opts = { x, y, size, color: col, lineHeight: size * 1.35 };
-      if (a.data.w) opts.maxWidth = a.data.w;
 
       // Text turns about the middle of its box, like it does on screen.
       const rot = a.data.rotation || 0;
+      let ox = x;
+      let oy = y;
       if (rot && a.type === 'text') {
         const o = rotatedOrigin(a.data.x, a.data.y, a.data.w, a.data.h, rot);
-        opts.x = x + (o.x - a.data.x);
-        opts.y = y + (o.y - a.data.y);
-        opts.rotate = degrees(rot);
+        ox = x + (o.x - a.data.x);
+        oy = y + (o.y - a.data.y);
       }
 
-      try {
-        page.drawText(text, { ...opts, font: helvetica });
-      } catch {
-        if (unicode) {
-          try {
-            page.drawText(text, { ...opts, font: unicode });
-          } catch (e) {
-            console.warn('[export] Text skipped:', e.message);
-          }
-        } else {
-          console.warn('[export] Skipped non-Latin text. Add a font to server/fonts.');
-        }
-      }
+      const width = a.data.w || 0;
+      drawMarkdown(page, {
+        text,
+        x: ox,
+        y: oy,
+        width,
+        size,
+        color: col,
+        rotate: rot && a.type === 'text' ? degrees(rot) : undefined,
+        faces,
+        unicode,
+      });
     }
 
     if (a.type === 'image') {

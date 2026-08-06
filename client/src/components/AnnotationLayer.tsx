@@ -8,6 +8,10 @@ import {
 } from '../lib/geometry';
 import { normalizePressure, simplify, strokeOutline } from '../lib/ink';
 import { TEXT_FONT, TEXT_LEADING } from '../lib/text';
+import {
+  blockSize, blockText, HEADING_GAP, indentFor, markerFor, markerWidth,
+  parseMarkdown, type Block, type Run,
+} from '../lib/markdown';
 import { pageViewports } from '../pdf';
 import type { Annotation, AnnType, Box, InkPt, Pt, Rect } from '../types';
 
@@ -27,6 +31,8 @@ const MIN_TEXT_W = 24;
 const HIT_SLACK = 4;
 /** How far a press may wander and still count as a click, not a drag. */
 const CLICK_SLOP = 4;
+/** Holds an empty markdown line open, so a blank line still takes a line. */
+const ZERO_WIDTH = '​';
 
 
 type Props = {
@@ -1195,6 +1201,72 @@ function LayerMenu({
 }
 
 /**
+ * A text box shown rather than edited. Editing shows the raw markdown in the
+ * textarea, which is the point: what you typed is what you can change. This is
+ * the same parse the export reads, so a heading is the same size on paper.
+ *
+ * A list item is a row with its marker in a fixed column, so a line that wraps
+ * lines up under the words rather than under the bullet.
+ */
+function Markdown({ text, size }: { text: string; size: number }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text]);
+  return (
+    <>
+      {blocks.map((b: Block, i: number) => {
+        const fs = blockSize(b, size);
+        const marker = markerFor(b);
+        const heading = b.kind === 'h1' || b.kind === 'h2' || b.kind === 'h3';
+        const common = {
+          fontSize: fs,
+          lineHeight: TEXT_LEADING,
+          fontWeight: heading ? 700 : undefined,
+          // Headings get a little air above, except the first line, where it
+          // would just push the words off the top of the box.
+          marginTop: heading && i > 0 ? fs * HEADING_GAP : undefined,
+        };
+
+        if (!marker) {
+          return (
+            <div key={i} className="whitespace-pre-wrap break-words" style={common}>
+              {/* An empty line still takes a line. */}
+              {b.runs.map((r, k) => <Emphasis key={k} run={r} />)}
+              {!blockText(b) && ZERO_WIDTH}
+            </div>
+          );
+        }
+        return (
+          <div key={i} className="flex break-words" style={common}>
+            <span
+              style={{
+                width: markerWidth(b, size),
+                marginLeft: indentFor(b, size) - markerWidth(b, size),
+                flex: 'none',
+              }}
+            >
+              {marker}
+            </span>
+            <span className="whitespace-pre-wrap min-w-0">
+              {b.runs.map((r, k) => <Emphasis key={k} run={r} />)}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+const Emphasis = ({ run }: { run: Run }) => (
+  <span
+    style={{
+      fontWeight: run.bold ? 700 : undefined,
+      fontStyle: run.italic ? 'italic' : undefined,
+    }}
+  >
+    {run.text}
+  </span>
+);
+
+/**
  * Floats an annotation's page above its neighbours for the length of a drag,
  * so something dragged past the page edge is not covered by the next page.
  * The annotation's own stacking is handled by React through `z`.
@@ -1512,7 +1584,7 @@ function HtmlAnnotation({
         // you do not have to land exactly on a glyph.
         <div
           ref={blockRef}
-          className="max-w-full whitespace-pre-wrap break-words select-none"
+          className="max-w-full select-none"
           style={{
             width: 'fit-content',
             color: ann.style.color,
@@ -1525,7 +1597,7 @@ function HtmlAnnotation({
             cursor: ann.locked ? 'default' : 'move',
           }}
         >
-          {ann.data.text || ''}
+          <Markdown text={ann.data.text || ''} size={ann.style.fontSize * scale} />
         </div>
       ) : (
         <textarea
