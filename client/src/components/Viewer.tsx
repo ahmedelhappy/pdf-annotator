@@ -515,11 +515,14 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
   useEffect(() => {
     async function onPaste(e: ClipboardEvent) {
       if (!pdf) return;
-      // Already typing in a text box: the caret is where the text belongs, so
-      // let the browser drop it in there. Pasting used to open a second box
-      // beside the one you were working in.
-      const caret = document.activeElement;
-      if (caret instanceof HTMLTextAreaElement && act().editingId) {
+      // Already typing in a text box or a note: the caret is where the text
+      // belongs, so let the browser drop it in there. Pasting used to open a
+      // second box beside the one you were working in. A text box edits through
+      // a contenteditable and a note through a textarea, so both count.
+      const caret = document.activeElement as HTMLElement | null;
+      const typing =
+        !!caret && (caret instanceof HTMLTextAreaElement || caret.isContentEditable);
+      if (typing && act().editingId) {
         wantsPaste.current = false;
         return;
       }

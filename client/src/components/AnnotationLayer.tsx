@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AUTO_COLOR, AUTO_ON_DARK, AUTO_ON_LIGHT, AUTO_WASH_ON_DARK, AUTO_WASH_ON_LIGHT, useStore } from '../store';
+import {
+  AUTO_COLOR, AUTO_ON_DARK, AUTO_ON_LIGHT, AUTO_WASH_ON_DARK, AUTO_WASH_ON_LIGHT,
+  MAX_FONT, MIN_FONT, useStore,
+} from '../store';
 import { api } from '../api';
 import {
   bboxOf, computeSnap, intersects, localPoint, NOTE_SIZE,
@@ -27,6 +30,8 @@ const POPOVER_MIN_W = 140;
 const POPOVER_MIN_H = 90;
 /** Narrowest a text box may be scaled, in PDF points. */
 const MIN_TEXT_W = 24;
+/** Shortest a text box can be, which is one line of the smallest type. */
+const MIN_TEXT_H = 8;
 /** Slack around a text box's words, so clicking one needs no precision. */
 const HIT_SLACK = 4;
 /** How far a press may wander and still count as a click, not a drag. */
@@ -658,6 +663,12 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
   // apart. A mixed selection stays upright.
   const frameSpin = only?.data?.rotation || 0;
   const canResize = !anyLocked && chosen.some((a) => RESIZABLE.includes(a.type));
+  /**
+   * Nothing but text boxes selected. Their height follows their words, so the
+   * sides drag the width and the corners scale the type instead of stretching
+   * a height that would only spring back.
+   */
+  const textOnly = chosen.length > 0 && chosen.every((a) => a.type === 'text');
 
   /**
    * Scales everything selected about the corner opposite the handle, so that
@@ -673,6 +684,7 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
     const grabbed = { x: corner.ax ? frame.x + frame.w : frame.x, y: corner.ay ? frame.y + frame.h : frame.y };
     const span = { x: grabbed.x - anchor.x, y: grabbed.y - anchor.y };
     scaleDrag.current = {
+      mode: textOnly ? 'font' : 'box',
       anchor,
       span,
       // A turned item is stored square and drawn rotated about its middle, so
@@ -688,10 +700,57 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
     };
   }
 
+  /**
+   * Drags a text box wider or narrower. Its height is not something you set, so
+   * the side handles are the only ones that change the box itself.
+   */
+  function startSide(e: React.PointerEvent, side: { ax: boolean }) {
+    if (!frame) return;
+    e.stopPropagation();
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    scaleDrag.current = {
+      mode: 'width',
+      // The edge you are not holding stays put.
+      edge: side.ax ? frame.x : frame.x + frame.w,
+      pulling: side.ax,
+      spin: frameSpin,
+      centre: { x: frame.x + frame.w / 2, y: frame.y + frame.h / 2 },
+      before: chosen.map((a) => ({ id: a._id, type: a.type, data: a.data, style: a.style })),
+    };
+  }
+
   function moveScale(e: React.PointerEvent) {
     const d = scaleDrag.current;
     if (!d) return;
     const q = localPoint(shellRef.current!, e);
+
+    if (d.mode === 'width') {
+      const p = rotatePoint(toPdf(viewport, q.x, q.y), d.centre, -d.spin);
+      const w = Math.max(MIN_TEXT_W, d.pulling ? p.x - d.edge : d.edge - p.x);
+      for (const b of d.before) {
+        act().update(b.id, { ...b.data, w, x: d.pulling ? d.edge : d.edge - w });
+      }
+      return;
+    }
+
+    if (d.mode === 'font') {
+      // Pulling a corner scales the type, the way a text box works on a
+      // whiteboard. The width goes with it so the words wrap where they did.
+      const p = rotatePoint(toPdf(viewport, q.x, q.y), d.centre, -d.spin);
+      const len = d.span.x * d.span.x + d.span.y * d.span.y;
+      const s = len
+        ? ((p.x - d.anchor.x) * d.span.x + (p.y - d.anchor.y) * d.span.y) / len
+        : 1;
+      for (const b of d.before) {
+        const was = b.style?.fontSize ?? 14;
+        const size = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(was * Math.max(0.05, s))));
+        if (size !== was) act().updateStyle([b.id], { fontSize: size });
+        const w = Math.max(MIN_TEXT_W, b.data.w * (size / was));
+        act().update(b.id, { ...b.data, w });
+      }
+      return;
+    }
+
     // Unwind the pointer into the item's own square space, or the corner you
     // grabbed and the corner the maths thinks you grabbed are different ones.
     const p = rotatePoint(toPdf(viewport, q.x, q.y), d.centre, -d.spin);
@@ -1026,7 +1085,11 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
                 CORNERS.map((c) => (
                   <div
                     key={c.key}
-                    title="Drag to resize. Hold shift to stretch one side."
+                    title={
+                      textOnly
+                        ? 'Drag to make the text bigger or smaller.'
+                        : 'Drag to resize. Hold shift to stretch one side.'
+                    }
                     className="absolute ann-handle"
                     style={{
                       left: c.ax ? '100%' : 0,
@@ -1034,6 +1097,21 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
                       cursor: c.cursor,
                     }}
                     onPointerDown={(e) => startScale(e, c)}
+                    onPointerMove={moveScale}
+                    onPointerUp={endScale}
+                    onPointerCancel={endScale}
+                  />
+                ))}
+
+              {/* Only a text box: the height belongs to the words. */}
+              {canResize && textOnly &&
+                SIDES.map((sd) => (
+                  <div
+                    key={sd.key}
+                    title="Drag to make the box wider or narrower."
+                    className="absolute ann-handle"
+                    style={{ left: sd.ax ? '100%' : 0, top: '50%', cursor: sd.cursor }}
+                    onPointerDown={(e) => startSide(e, sd)}
                     onPointerMove={moveScale}
                     onPointerUp={endScale}
                     onPointerCancel={endScale}
@@ -1107,6 +1185,15 @@ const ROTATABLE = ['image', 'text', 'highlight'];
 const ERASABLE = ['ink', 'highlight'];
 /** A note is a fixed-size pin, so it has nothing to resize. */
 const RESIZABLE = ['ink', 'highlight', 'image', 'text'];
+
+/**
+ * Left and right, halfway up. Only a text box gets these: its height is however
+ * tall its words are, so width is the one dimension worth dragging.
+ */
+const SIDES = [
+  { key: 'l', ax: false, cursor: 'ew-resize' },
+  { key: 'r', ax: true, cursor: 'ew-resize' },
+];
 
 const CORNERS: Corner[] = [
   { key: 'tl', ax: false, ay: true, cursor: 'nwse-resize' },
@@ -1255,6 +1342,166 @@ function Markdown({ text, size }: { text: string; size: number }) {
   );
 }
 
+/** Characters before the caret, counting each line break as one. */
+function caretOffset(root: HTMLElement): number {
+  const sel = window.getSelection();
+  if (!sel?.focusNode || !root.contains(sel.focusNode)) return -1;
+  const r = document.createRange();
+  r.setStart(root, 0);
+  try {
+    r.setEnd(sel.focusNode, sel.focusOffset);
+  } catch {
+    return -1;
+  }
+  // Measured through a clone rather than counted by hand, so a line break counts
+  // the same way innerText counts it whatever shape the DOM is in. Off screen,
+  // so nothing flashes.
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;left:-9999px;top:0;white-space:pre-wrap';
+  probe.appendChild(r.cloneContents());
+  document.body.appendChild(probe);
+  const n = probe.innerText.length;
+  probe.remove();
+  return n;
+}
+
+/** Puts the caret back at a character offset, in a one-line-per-child editor. */
+function placeCaret(root: HTMLElement, at: number) {
+  const sel = window.getSelection();
+  if (!sel) return;
+  const put = (node: Node, offset: number) => {
+    const r = document.createRange();
+    r.setStart(node, offset);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  };
+
+  let seen = 0;
+  for (const line of Array.from(root.children) as HTMLElement[]) {
+    const len = (line.textContent || '').length;
+    if (at <= seen + len) {
+      const t = line.firstChild;
+      if (t && t.nodeType === Node.TEXT_NODE) put(t, Math.min(at - seen, (t as Text).length));
+      else put(line, 0);
+      return;
+    }
+    // The newline that ends this line.
+    seen += len + 1;
+  }
+  // Past the end, which happens when the last line was just deleted.
+  const last = root.lastElementChild;
+  if (last) put(last, last.childNodes.length ? 1 : 0);
+}
+
+/** One element per line, so a line is something that can be styled. */
+function fillLines(el: HTMLElement, text: string, size: number) {
+  el.replaceChildren(
+    ...text.split('\n').map((line) => {
+      const div = document.createElement('div');
+      // An empty line needs something in it to have a height of its own.
+      if (line) div.textContent = line;
+      else div.appendChild(document.createElement('br'));
+      return div;
+    })
+  );
+  restyleLines(el, text, size);
+}
+
+/** Writes each line's markdown shape onto the element holding that line. */
+function restyleLines(el: HTMLElement, text: string, size: number) {
+  const kids = Array.from(el.children) as HTMLElement[];
+  const blocks = parseMarkdown(text);
+  for (let i = 0; i < Math.min(kids.length, blocks.length); i++) {
+    const b = blocks[i];
+    const heading = b.kind === 'h1' || b.kind === 'h2' || b.kind === 'h3';
+    kids[i].style.fontSize = `${blockSize(b, size)}px`;
+    kids[i].style.fontWeight = heading ? '700' : '';
+    kids[i].style.paddingLeft = `${indentFor(b, size)}px`;
+    kids[i].style.marginTop = heading && i > 0 ? `${blockSize(b, size) * HEADING_GAP}px` : '';
+  }
+}
+
+/**
+ * The editor for a text box. The markdown takes effect as you type: a line
+ * becomes a heading the moment you put a hash in front of it, and a bullet
+ * indents itself the moment you type the dash.
+ *
+ * It is a `contenteditable`. Chrome's plaintext-only mode keeps everything in
+ * one node with newline characters in it, so there are no per-line elements to
+ * style and this rebuilds them on each keystroke, then puts the caret back by
+ * character offset. Rebuilding is what would normally move a caret, but the
+ * model here is flat enough that the offset is exact: one child per line, one
+ * text node per child.
+ *
+ * Rebuilding is skipped while an input method is composing, since replacing the
+ * nodes underneath a composition abandons it halfway.
+ *
+ * Inline emphasis is left to settle when you finish. Splitting a line into bold
+ * and italic spans as you type would put the caret inside a run that is about to
+ * be re-cut. Block shape is where nearly all the visible change is anyway.
+ */
+function MarkdownInput({
+  inputRef, text, size, color, onText, onBlur,
+}: {
+  inputRef: React.RefObject<any>;
+  text: string;
+  size: number;
+  color: string;
+  onText: (next: string, needPx: number) => void;
+  onBlur: () => void;
+}) {
+  const first = useRef(text);
+  const composing = useRef(false);
+
+  useEffect(() => {
+    const el = inputRef.current as HTMLElement | null;
+    if (el) fillLines(el, first.current, size);
+    // Starting content only. Every keystroke after this is handled below.
+  }, []);
+
+  function onInput(el: HTMLElement) {
+    const raw = el.innerText.replace(/\r\n/g, '\n').replace(/\n$/, '');
+    if (composing.current) {
+      // Style what can be styled and leave the nodes alone until it lands.
+      restyleLines(el, raw, size);
+    } else {
+      const at = caretOffset(el);
+      fillLines(el, raw, size);
+      if (at >= 0) placeCaret(el, at);
+    }
+    onText(raw, el.scrollHeight);
+  }
+
+  return (
+    <div
+      ref={inputRef}
+      contentEditable="plaintext-only"
+      suppressContentEditableWarning
+      role="textbox"
+      aria-multiline="true"
+      className="w-full h-full bg-transparent outline-none overflow-hidden whitespace-pre-wrap break-words"
+      style={{
+        color,
+        fontSize: size,
+        fontFamily: TEXT_FONT,
+        lineHeight: TEXT_LEADING,
+        pointerEvents: 'auto',
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onInput={(e) => onInput(e.currentTarget)}
+      onCompositionStart={() => {
+        composing.current = true;
+      }}
+      onCompositionEnd={(e) => {
+        composing.current = false;
+        onInput(e.currentTarget);
+      }}
+      onBlur={onBlur}
+    />
+  );
+}
+
 const Emphasis = ({ run }: { run: Run }) => (
   <span
     style={{
@@ -1305,27 +1552,46 @@ function HtmlAnnotation({
   }, [selected, editing]);
 
   /**
-   * Changing the font size of a box already on the page has to take the box with
-   * it, or bigger text spills out the bottom. Measured rather than scaled by the
-   * ratio: a larger size wraps into more lines, so the height it needs grows by
-   * more than the size did. Only ever grows, so a size someone set by dragging
-   * the corner is never taken away from them.
+   * A text box's height is not something you set: it is however tall its words
+   * are. Dragging the frame taller left the text floating in empty space and
+   * dragging it shorter left the text hanging out of the bottom, so the height
+   * follows the content and the frame follows the height.
+   *
+   * Measured rather than worked out from the size, because wrapping is what
+   * decides the line count and only the browser knows where a line breaks.
+   * y is the bottom edge, so it moves to keep the top of the box still.
    */
   const blockRef = useRef<HTMLDivElement>(null);
-  const shownAt = useRef(ann.style?.fontSize);
   useEffect(() => {
-    const size = ann.style?.fontSize;
-    if (ann.type !== 'text' || editing || size === shownAt.current) return;
-    shownAt.current = size;
+    if (ann.type !== 'text' || editing) return;
     const el = blockRef.current;
     if (!el) return;
     const need = (el.scrollHeight + 2) / scale;
-    if (need > ann.data.h) onChange({ ...ann.data, h: need, y: ann.data.y + ann.data.h - need });
-  }, [ann.style?.fontSize, editing]);
+    // A threshold, or rounding at one zoom level would set the height back and
+    // forth for ever.
+    if (Math.abs(need - ann.data.h) > 0.5) {
+      onChange({ ...ann.data, h: need, y: ann.data.y + ann.data.h - need });
+    }
+  }, [ann.data.text, ann.data.w, ann.data.h, ann.style?.fontSize, editing, scale]);
 
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // A text box's editor is a contenteditable; a note's is a plain textarea.
+  const inputRef = useRef<any>(null);
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
+    if (editing) {
+      const el = inputRef.current;
+      el?.focus();
+      // Focus lands the caret at the very start, which is the wrong end when
+      // you have just double clicked into a box to add to it.
+      if (el?.setSelectionRange) el.setSelectionRange(el.value.length, el.value.length);
+      else if (el?.isContentEditable && el.childNodes.length) {
+        const r = document.createRange();
+        r.selectNodeContents(el);
+        r.collapse(false);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(r);
+      }
+    }
     // Clearing `editing` is not enough on its own: the textarea keeps DOM
     // focus, so the caret stays visible and blur, which is what removes an
     // empty box, never fires.
@@ -1390,20 +1656,15 @@ function HtmlAnnotation({
   }
 
   /**
-   * Grows a text box downwards to fit what is in it. Width is left alone: text
-   * wraps at whatever width you set, and only the height follows the content,
-   * so a long line never pushes the box off the page. Dragging the corner
-   * still sets both by hand, and this only ever grows, so that size sticks.
+   * Fits a text box to what is in it while you type. Width is left alone: text
+   * wraps at whatever width you set, and only the height follows, so a long line
+   * never pushes the box off the page. It shrinks as well as grows, because the
+   * height is the content's to decide.
    */
-  function grown(el: HTMLTextAreaElement, data: any) {
-    const h = el.style.height;
-    el.style.height = '0px';
-    const needH = el.scrollHeight + 2;
-    el.style.height = h;
-
-    const nh = Math.max(data.h, needH / scale);
-    if (nh <= data.h) return data;
-    // y is the bottom edge, so growing downward keeps the top where it is.
+  function fittedTo(data: any, needPx: number) {
+    const nh = Math.max(MIN_TEXT_H, (needPx + 2) / scale);
+    if (Math.abs(nh - data.h) < 0.5) return data;
+    // y is the bottom edge, so changing the height keeps the top where it is.
     return { ...data, h: nh, y: data.y + data.h - nh };
   }
 
@@ -1600,20 +1861,14 @@ function HtmlAnnotation({
           <Markdown text={ann.data.text || ''} size={ann.style.fontSize * scale} />
         </div>
       ) : (
-        <textarea
-          ref={inputRef}
-          defaultValue={ann.data.text}
-          className="w-full h-full bg-transparent outline-none resize-none overflow-hidden"
-          style={{
-            color: ann.style.color,
-            fontSize: ann.style.fontSize * scale,
-            fontFamily: TEXT_FONT,
-            lineHeight: TEXT_LEADING,
-            pointerEvents: 'auto',
-          }}
-          placeholder="Type here"
-          onPointerDown={(e) => e.stopPropagation()}
-          onChange={(e) => onChange(grown(e.target, { ...ann.data, text: e.target.value }))}
+        <MarkdownInput
+          inputRef={inputRef}
+          text={ann.data.text || ''}
+          size={ann.style.fontSize * scale}
+          color={ann.style.color}
+          onText={(next: string, needH: number) =>
+            onChange(fittedTo({ ...ann.data, text: next }, needH))
+          }
           // An empty box has nothing to show and nothing to click, so it goes
           // once you leave it alone. Deleting on change would remove it the
           // moment you cleared it to retype, and deleting on blur alone would
