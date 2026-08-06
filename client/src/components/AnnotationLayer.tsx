@@ -1237,6 +1237,25 @@ function HtmlAnnotation({
     if (ann.type === 'text' && !String(ann.data?.text || '').trim()) onDelete();
   }, [selected, editing]);
 
+  /**
+   * Changing the font size of a box already on the page has to take the box with
+   * it, or bigger text spills out the bottom. Measured rather than scaled by the
+   * ratio: a larger size wraps into more lines, so the height it needs grows by
+   * more than the size did. Only ever grows, so a size someone set by dragging
+   * the corner is never taken away from them.
+   */
+  const blockRef = useRef<HTMLDivElement>(null);
+  const shownAt = useRef(ann.style?.fontSize);
+  useEffect(() => {
+    const size = ann.style?.fontSize;
+    if (ann.type !== 'text' || editing || size === shownAt.current) return;
+    shownAt.current = size;
+    const el = blockRef.current;
+    if (!el) return;
+    const need = (el.scrollHeight + 2) / scale;
+    if (need > ann.data.h) onChange({ ...ann.data, h: need, y: ann.data.y + ann.data.h - need });
+  }, [ann.style?.fontSize, editing]);
+
   const inputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (editing) inputRef.current?.focus();
@@ -1497,6 +1516,7 @@ function HtmlAnnotation({
         // the words are clickable. The padding gives a few pixels of slack so
         // you do not have to land exactly on a glyph.
         <div
+          ref={blockRef}
           className="max-w-full whitespace-pre-wrap break-words select-none"
           style={{
             width: 'fit-content',

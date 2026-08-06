@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AUTO_COLOR, PRESETS, useStore } from '../store';
+import { AUTO_COLOR, MAX_FONT, MIN_FONT, PRESETS, useStore } from '../store';
 import type { Tool } from '../types';
 
 /**
@@ -23,6 +23,8 @@ const ICONS: Record<Tool, JSX.Element> = {
     <path d="M2.5 3.5h15v13h-15zm1.8 1.8v7.3l3.4-3.4 2.6 2.6 2.6-2.6 2.8 2.8V5.3zm8.4 1.4a1.4 1.4 0 110 2.8 1.4 1.4 0 010-2.8z" />
   ),
 };
+
+const clampFont = (n: number) => Math.round(Math.min(MAX_FONT, Math.max(MIN_FONT, n)));
 
 const TOOLS: [Tool, string, string][] = [
   ['select', 'Select', 'V'],
@@ -64,6 +66,8 @@ export default function Toolbar({
   const setStyle = useStore((s) => s.setStyle);
   const pickColor = useStore((s) => s.pickColor);
   const listOpen = useStore((s) => s.listOpen);
+  const selectedIds = useStore((s) => s.selectedIds);
+  const annotations = useStore((s) => s.annotations);
   const toggle = useStore((s) => s.toggle);
   const setPaletteColor = useStore((s) => s.setPaletteColor);
   /**
@@ -80,6 +84,15 @@ export default function Toolbar({
   const redo = useStore((s) => s.redo);
 
   const btn = 'px-2 py-1 rounded text-sm hover:bg-neutral-800';
+
+  /**
+   * The size box is only there when it applies: the text and note tools, or a
+   * selection that contains something with words in it, where changing the
+   * number resizes what is already on the page through setStyle.
+   */
+  const showFont =
+    tool === 'text' || tool === 'note' ||
+    annotations.some((a) => selectedIds.includes(a._id) && (a.type === 'text' || a.type === 'note'));
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 bg-neutral-900 text-neutral-200 border-b border-neutral-800 flex-wrap">
@@ -174,6 +187,36 @@ export default function Toolbar({
         title={`Stroke width ${style.width}`}
         onChange={(e) => setStyle({ width: +e.target.value })}
       />
+      {/*
+        Font size for text boxes and notes. Shown only for the tools it means
+        anything to, or with a text box selected, where it resizes what is
+        already on the page. Kept as a number box rather than a dropdown so any
+        size can be typed, not just the handful worth listing.
+      */}
+      {showFont && (
+        <span className="flex items-center gap-1 text-sm text-neutral-400">
+          <span className="text-xs">Aa</span>
+          <input
+            type="number"
+            min={MIN_FONT}
+            max={MAX_FONT}
+            step={1}
+            value={style.fontSize}
+            title={`Font size ${style.fontSize} points`}
+            aria-label="Font size"
+            className="w-14 bg-neutral-800 rounded px-1 py-1 text-sm text-neutral-200"
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n)) setStyle({ fontSize: clampFont(n) });
+            }}
+          />
+          <button className={btn} title="Smaller text"
+            onClick={() => setStyle({ fontSize: clampFont(style.fontSize - 2) })}>A-</button>
+          <button className={btn} title="Larger text"
+            onClick={() => setStyle({ fontSize: clampFont(style.fontSize + 2) })}>A+</button>
+        </span>
+      )}
+
       <select
         className="bg-neutral-800 text-sm rounded px-1 py-1"
         value=""
