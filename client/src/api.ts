@@ -37,6 +37,12 @@ export const api = {
   },
   setThumbnail: (id: string, thumbnailAssetId: string) =>
     fetch(`/api/documents/${id}`, jsonPatch({ thumbnailAssetId })).then(j<DocMeta>),
+  /**
+   * Remembers where the reader is, so the document opens there next time. Sent
+   * with keepalive so a page turn just before the tab closes still lands.
+   */
+  setLastPage: (id: string, lastPage: number) =>
+    fetch(`/api/documents/${id}`, { ...jsonPatch({ lastPage }), keepalive: true }),
   /** Moves the document to the trash. Nothing is destroyed. */
   deleteDoc: (id: string) =>
     fetch(`/api/documents/${id}`, { method: 'DELETE' }).then(j<{ ok: true }>),

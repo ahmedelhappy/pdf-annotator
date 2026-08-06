@@ -103,6 +103,10 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
   /** Read from a timer that outlives the render it was scheduled in. */
   const currentRef = useRef(0);
   currentRef.current = current;
+  /** True once the document has been opened, so a reload is not a fresh open. */
+  const opened = useRef(false);
+  /** The page to jump to as soon as the shells are laid out. */
+  const restoreTo = useRef<number | null>(null);
 
   const scale = useStore((s) => s.scale);
   const tool = useStore((s) => s.tool);
@@ -180,6 +184,13 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
         if (dead) return;
         setPageSizes(sizes);
         setPdf(doc);
+        // Opening picks up where you left off. A page-op reload is not an
+        // opening, so it is left alone: you are already looking at the page.
+        if (!opened.current) {
+          opened.current = true;
+          const want = Math.min(Math.max(0, m.lastPage ?? 0), doc.numPages - 1);
+          if (want > 0) restoreTo.current = want;
+        }
         // Held back until here so the animation plays on the cards that came
         // out of the rewrite, not on the ones about to be replaced.
         pointOut(flashOnReload.current);
@@ -728,6 +739,34 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
   useEffect(() => {
     readCurrent();
   }, [pdf, scale, hidden, readCurrent]);
+
+  /**
+   * Jumps to the remembered page once the shells are laid out. `pageSizes` gives
+   * every shell its height up front, so one jump lands: waiting for the pages to
+   * render would mean scrolling into a document that was still growing.
+   */
+  useLayoutEffect(() => {
+    const want = restoreTo.current;
+    if (want === null || !pdf || !pageSizes.length) return;
+    restoreTo.current = null;
+    const el = scrollRef.current;
+    const shell = el?.querySelector(`[data-page="${want}"]`) as HTMLElement | null;
+    if (!el || !shell) return;
+    el.scrollTop = shell.offsetTop - GAP_PX;
+    setCurrent(want);
+  }, [pdf, pageSizes]);
+
+  // Remembered as you read, debounced, so the write is one page behind at worst
+  // and a fast scroll through fifty pages is not fifty requests.
+  useEffect(() => {
+    if (!opened.current) return;
+    const t = setTimeout(() => {
+      api.setLastPage(docId, current).catch(() => {
+        /* the place is a convenience, not worth an error banner */
+      });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [docId, current]);
 
   function startPan(e: React.PointerEvent) {
     const el = scrollRef.current!;

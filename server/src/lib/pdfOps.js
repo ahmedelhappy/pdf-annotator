@@ -35,14 +35,26 @@ async function applyRemap(documentId, remap) {
       { ordered: false }
     );
   }
-  // Hidden pages are page numbers too, so they move exactly as annotations do.
-  // Miss this and hiding page 3 then deleting page 1 hides the wrong page.
-  const doc = await Doc.findById(documentId).select('hiddenPages').lean();
+  // Hidden pages and the reader's last place are page numbers too, so they move
+  // exactly as annotations do. Miss this and hiding page 3 then deleting page 1
+  // hides the wrong page.
+  const doc = await Doc.findById(documentId).select('hiddenPages lastPage').lean();
+  const set = {};
+
   const hidden = doc?.hiddenPages || [];
   if (hidden.length) {
     const next = hidden.map(remap).filter((i) => i !== null);
-    await Doc.updateOne({ _id: documentId }, { $set: { hiddenPages: [...new Set(next)].sort((a, b) => a - b) } });
+    set.hiddenPages = [...new Set(next)].sort((a, b) => a - b);
   }
+
+  if (Number.isInteger(doc?.lastPage)) {
+    // If the page someone was reading is the one that went, put them on the
+    // page that took its place rather than back at the front.
+    const next = remap(doc.lastPage);
+    set.lastPage = next === null ? Math.max(0, doc.lastPage - 1) : next;
+  }
+
+  if (Object.keys(set).length) await Doc.updateOne({ _id: documentId }, { $set: set });
 }
 
 /** How many page ops can be taken back. Older snapshots are dropped. */
@@ -68,6 +80,7 @@ export async function snapshot(file, doc, label, pages = []) {
       pages,
       pageCount: doc.pageCount,
       hiddenPages: doc.hiddenPages || [],
+      lastPage: doc.lastPage || 0,
     },
   ];
   // Drop the oldest once the stack is full, files and all.
@@ -98,6 +111,7 @@ export async function undoPageOp(file, doc) {
       $set: {
         pageCount: shot.pageCount,
         hiddenPages: shot.hiddenPages || [],
+        lastPage: shot.lastPage || 0,
         pageUndo: stack.slice(0, -1),
       },
     }

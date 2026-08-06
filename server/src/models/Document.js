@@ -10,6 +10,10 @@ const schema = new mongoose.Schema(
     busy: { type: Boolean, default: false },
     busySince: Date,
     lastOpenedAt: Date,
+    // Where the reader was when the document was last closed, so it opens
+    // there instead of at page one. Renumbered with everything else by a page
+    // op, and clamped on read in case the file shrank since.
+    lastPage: { type: Number, default: 0 },
     // Deleting moves a document to the trash rather than unlinking the file, so
     // a mistaken delete is recoverable. Nothing purges this automatically.
     deletedAt: Date,
@@ -26,6 +30,7 @@ const schema = new mongoose.Schema(
           anns: String,
           pageCount: Number,
           hiddenPages: [Number],
+          lastPage: Number,
           label: String,
           /** Which pages the op touched, so undo can point them out again. */
           pages: [Number],

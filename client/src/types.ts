@@ -31,6 +31,8 @@ export type DocMeta = {
   deletedAt?: string;
   /** Pages kept in the file but skipped in the viewer and at export. */
   hiddenPages?: number[];
+  /** Where the reader was when this document was last closed. */
+  lastPage?: number;
 };
 
 export type Preset = { name: string; tool: Tool; style: Style };

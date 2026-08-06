@@ -81,11 +81,14 @@ r.get('/:id', async (req, res, next) => {
 
 r.patch('/:id', async (req, res, next) => {
   try {
-    const doc = await Doc.findByIdAndUpdate(
-      req.params.id,
-      { thumbnailAssetId: req.body.thumbnailAssetId },
-      { new: true }
-    );
+    // Only the fields that were actually sent, so setting one does not wipe
+    // the other.
+    const set = {};
+    if (req.body.thumbnailAssetId) set.thumbnailAssetId = req.body.thumbnailAssetId;
+    if (Number.isInteger(req.body.lastPage) && req.body.lastPage >= 0)
+      set.lastPage = req.body.lastPage;
+
+    const doc = await Doc.findByIdAndUpdate(req.params.id, set, { new: true });
     if (!doc) return res.status(404).json({ error: 'That document is gone.' });
     res.json(doc);
   } catch (e) {
