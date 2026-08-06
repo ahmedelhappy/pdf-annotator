@@ -10,7 +10,7 @@ Two npm workspaces driven from the root: `client/` and `server/`.
 npm run setup                    # install root + server + client
 npm run dev                      # concurrently: server on 5174, client on 5173
 npm run sample                   # writes sample.pdf at repo root, 6 pages
-npm test                         # 41 server tests + 87 client tests
+npm test                         # 58 server tests + 119 client tests
 npm --prefix client run typecheck   # tsc --noEmit, must be clean
 ```
 
@@ -54,11 +54,15 @@ Deleted page *content* only exists in that snapshot, so a page op that skips
 before hitting the server so no debounced write is in flight during a renumber.
 Any new path that reorganizes pages must do the same.
 
-**4. Ink parity.** `strokeOutline` is duplicated in
+**4. Ink and markdown parity.** `strokeOutline` is duplicated in
 [client/src/lib/ink.ts](client/src/lib/ink.ts) and
-[server/src/lib/ink.js](server/src/lib/ink.js) so neither package needs a build
-step. [ink.test.ts](client/src/test/ink.test.ts) imports both and asserts
-identical output. Change one, change both.
+[server/src/lib/ink.js](server/src/lib/ink.js), and the markdown parser in
+[client/src/lib/markdown.ts](client/src/lib/markdown.ts) and
+[server/src/lib/markdown.js](server/src/lib/markdown.js), so neither package
+needs a build step. [ink.test.ts](client/src/test/ink.test.ts) and
+[markdown.test.ts](client/src/test/markdown.test.ts) import both copies and
+assert identical output. Change one, change both. The page and the export have
+to read a box the same way, or what you type and what you print stop matching.
 
 **5. Search haystack.** [search.ts](client/src/lib/search.ts) stitches page text
 twice: `SearchIndex.pageText` joins `getTextContent` items, `hitsInTextLayer`
@@ -100,6 +104,12 @@ to 0.0.0.0 and do not add a host flag.
   single-node replica set.
 - Non-Latin text is skipped at export unless a `.ttf`/`.otf` sits in
   `server/fonts/`. The server logs a warning. Documented, not a bug.
+
+## Git
+
+The repository starts at one commit holding the project as it already was: that
+work predates the repo and cannot be split back into the history it was built
+in. Everything after is one commit per change.
 
 ## Orientation
 
@@ -176,6 +186,43 @@ to 0.0.0.0 and do not add a host flag.
   the page to render before converting through its viewport. `alt+arrowup` and
   `alt+arrowdown` already move a page, and arrow keys normalise to `arrowup`,
   so `alt+up` would never have fired.
+- A text box reads a small slice of markdown: `#` to `###`, `-`/`*`/`+` bullets,
+  `1.` numbers, `[ ]` and `[x]`, two spaces per nesting level, `*italic*` and
+  `**bold**`. Editing shows the raw text. Underscores are deliberately not
+  emphasis, since `file_name` is far more common than intent. A checkbox is
+  spelled `[ ]` rather than drawn as a ballot box: Helvetica is WinAnsi only and
+  an unencodable marker took the whole box down at export. Each marker kind
+  reserves a column of its own width through `MARKER_WIDTH`.
+- The export wraps markdown runs itself in `wrapRuns` rather than using pdf-lib's
+  `maxWidth`, which cannot follow a face that changes mid-line. `coalesce` joins
+  neighbouring pieces in the same face back together: drawing word by word put
+  every word in the file as its own text item and copying out of the export came
+  apart. Non-Latin text still falls back to the embedded face with the markup
+  flattened.
+- `TEXT_FONT` and `TEXT_LEADING` live in [text.ts](client/src/lib/text.ts) with
+  `textHeight`, which measures wrapped height through one reused offscreen
+  element. A pasted paragraph is one long line that wraps into many, so counting
+  newlines gave a box one line tall with the text hanging out of it.
+- Ctrl+V with the caret in a text box stands aside and lets the browser drop the
+  text in at the caret. It used to open a second box beside the one you were in.
+- Dragging one of several selected annotations moves all of them.
+  `beginGroup`/`moveGroup`/`endGroup` in AnnotationLayer own that, and both
+  pointer paths ask them. The group snaps as one box, or each member chases a
+  different guide and the selection comes apart. A group keeps its page:
+  `moveToPage` is one annotation at a time.
+- `hit` does not narrow a multiple selection when you press a member of it; that
+  press is how a group drag starts. A window `pointerup` narrows to the one
+  thing only if the press never became a drag. Only button 0 changes a
+  selection, or a right press collapsed the group before its menu opened.
+- A locked annotation keeps its transparent hit box. Suppressing it left the
+  right click, and so unlocking, needing a hit on a stroke two points wide.
+  `store.nudge` filters locked ids the way `store.remove` does.
+- `store.style` is persisted to localStorage and validated on the way back in.
+  `lastPage` on the document row follows the reader on a debounce and is
+  remapped by `applyRemap` and carried in the page-op snapshot, so undo puts the
+  reader back too. Restoring happens in a layout effect against `pageSizes`,
+  which gives every shell its height before anything renders, and only on a real
+  open: a page-op reload is not an opening.
 - Every keybinding is one table in [shortcuts.ts](client/src/lib/shortcuts.ts).
   Whole API surface is [api.ts](client/src/api.ts). A binding with `standDown`
   hands the key back to the browser: Ctrl+C does that whenever page text is
@@ -341,6 +388,8 @@ mount, so it does nothing here. Focus with a ref plus an effect keyed on
   not on the undo stack.
 - An unselected text box only takes a pointer on its own words, so anything
   aiming at the middle of one hits the text layer behind it instead.
+- Rotation is offered for a single box type only, and a group drag does not
+  cross pages.
 - A 404 fires on every page load, source not identified. Page 4's sidebar
   thumbnail looks portrait while the page itself renders landscape.
 - An image only a few pixels wide sits entirely under its own resize handle, so
