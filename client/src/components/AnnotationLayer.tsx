@@ -7,6 +7,7 @@ import {
   type Guide,
 } from '../lib/geometry';
 import { normalizePressure, simplify, strokeOutline } from '../lib/ink';
+import { TEXT_FONT, TEXT_LEADING } from '../lib/text';
 import { pageViewports } from '../pdf';
 import type { Annotation, AnnType, Box, InkPt, Pt, Rect } from '../types';
 
@@ -26,13 +27,7 @@ const MIN_TEXT_W = 24;
 const HIT_SLACK = 4;
 /** How far a press may wander and still count as a click, not a drag. */
 const CLICK_SLOP = 4;
-/**
- * Text boxes are drawn in the same face and leading the export uses, so what
- * wraps where on screen is what wraps where on paper. pdf-lib has Helvetica
- * built in; Arial is the metric-compatible stand-in when it is missing.
- */
-const TEXT_FONT = 'Helvetica, Arial, sans-serif';
-const TEXT_LEADING = 1.35;
+
 
 type Props = {
   pageIndex: number;

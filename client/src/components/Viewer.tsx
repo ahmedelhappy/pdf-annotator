@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { loadPdf, pageViewports } from '../pdf';
 import { toPdf, toView } from '../lib/geometry';
+import { textHeight } from '../lib/text';
 
 import { api } from '../api';
 import { CLIP_MARKER, onPagesRestored, PRESETS, useStore } from '../store';
@@ -514,6 +515,15 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
   useEffect(() => {
     async function onPaste(e: ClipboardEvent) {
       if (!pdf) return;
+      // Already typing in a text box: the caret is where the text belongs, so
+      // let the browser drop it in there. Pasting used to open a second box
+      // beside the one you were working in.
+      const caret = document.activeElement;
+      if (caret instanceof HTMLTextAreaElement && act().editingId) {
+        wantsPaste.current = false;
+        return;
+      }
+
       const items = Array.from(e.clipboardData?.items || []);
       const image = items.find((i) => i.type.startsWith('image/'));
       const raw = e.clipboardData?.getData('text/plain')?.trim();
@@ -555,10 +565,12 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
           return;
         }
 
+        // The width is the same for any paste; only the height follows the
+        // text. Counting newlines gave a one line box for a pasted paragraph,
+        // which is a single long line that wraps into many, so it is measured.
         const size = act().style.fontSize || 14;
-        const lines = text!.split('\n').length;
         const w = Math.min(320, vp.width * 0.6);
-        const h = Math.max(size * 1.35, lines * size * 1.35 + 4);
+        const h = textHeight(text!, w, size) + 4;
         const x = clamp(at ? at.x : (vp.width - w) / 2, 0, Math.max(0, vp.width - w));
         const y = clamp(at ? at.y - h : (vp.height - h) / 2, 0, Math.max(0, vp.height - h));
         const made = await act().add({
