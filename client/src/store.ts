@@ -68,6 +68,44 @@ function saveShortcuts(prefs: ShortcutPrefs): ShortcutPrefs {
   return prefs;
 }
 
+/** The range the font size control offers, in PDF points. */
+export const MIN_FONT = 6;
+export const MAX_FONT = 96;
+
+const STYLE_KEY = 'pdf-annotator.style';
+
+const DEFAULT_STYLE: Style = { color: INITIAL_PALETTE[0], width: 2, opacity: 1, fontSize: 14 };
+
+/**
+ * The pen you were last using, brought back on the next visit. Only the four
+ * fields are read back and each is checked, so an old or hand-edited entry
+ * cannot put the toolbar into a state it has no controls for.
+ */
+function loadStyle(): Style {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STYLE_KEY) || 'null');
+    if (!raw || typeof raw !== 'object') return { ...DEFAULT_STYLE };
+    const num = (v: unknown, lo: number, hi: number, fallback: number) =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
+    return {
+      color: typeof raw.color === 'string' ? raw.color : DEFAULT_STYLE.color,
+      width: num(raw.width, 1, 20, DEFAULT_STYLE.width),
+      opacity: num(raw.opacity, 0.05, 1, DEFAULT_STYLE.opacity),
+      fontSize: num(raw.fontSize, MIN_FONT, MAX_FONT, DEFAULT_STYLE.fontSize),
+    };
+  } catch {
+    return { ...DEFAULT_STYLE };
+  }
+}
+
+function saveStyle(style: Style) {
+  try {
+    localStorage.setItem(STYLE_KEY, JSON.stringify(style));
+  } catch {
+    /* private mode, the choice still holds for this session */
+  }
+}
+
 const SIDEBAR_KEY = 'pdf-annotator.sidebarWidth';
 /** Dragged narrower than this and the sidebar closes instead. */
 export const SIDEBAR_MIN = 120;
@@ -222,7 +260,7 @@ export const useStore = create<State>((set, get) => ({
   redoStack: [],
 
   tool: 'select',
-  style: { color: INITIAL_PALETTE[0], width: 2, opacity: 1, fontSize: 14 },
+  style: loadStyle(),
   palette: INITIAL_PALETTE,
   selectedIds: [],
   selectedPages: [],
@@ -265,7 +303,11 @@ export const useStore = create<State>((set, get) => ({
     set((s) => ({ tool, editingId: null, selectedIds: tool === 'select' ? s.selectedIds : [] })),
 
   setStyle: (patch) => {
-    set((s) => ({ style: { ...s.style, ...patch } }));
+    set((s) => {
+      const style = { ...s.style, ...patch };
+      saveStyle(style);
+      return { style };
+    });
     const { selectedIds, updateStyle } = get();
     if (selectedIds.length) updateStyle(selectedIds, patch);
   },
@@ -295,7 +337,10 @@ export const useStore = create<State>((set, get) => ({
       return { palette };
     }),
 
-  applyPreset: (p) => set({ tool: p.tool, style: { ...p.style } }),
+  applyPreset: (p) => {
+    saveStyle(p.style);
+    set({ tool: p.tool, style: { ...p.style } });
+  },
   setScale: (scale) => set({ scale: Math.min(6, Math.max(0.2, +scale.toFixed(2))) }),
 
   // Additive follows the usual convention: shift or ctrl adds, and clicking
