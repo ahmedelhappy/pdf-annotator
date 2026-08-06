@@ -602,7 +602,9 @@ export const useStore = create<State>((set, get) => ({
     const { selectedIds, annotations, update } = get();
     for (const id of selectedIds) {
       const ann = annotations.find((a) => a._id === id);
-      if (ann) update(id, translate(ann.type, ann.data, dx, dy));
+      // Locked means locked whichever way you push it. The arrow keys used to
+      // go around the pointer's check and move it anyway.
+      if (ann && !ann.locked) update(id, translate(ann.type, ann.data, dx, dy));
     }
   },
 
