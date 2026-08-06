@@ -8,7 +8,7 @@ import {
 } from '../lib/geometry';
 import { normalizePressure, simplify, strokeOutline } from '../lib/ink';
 import { pageViewports } from '../pdf';
-import type { Annotation, Box, InkPt, Pt, Rect } from '../types';
+import type { Annotation, AnnType, Box, InkPt, Pt, Rect } from '../types';
 
 /** Pixels of slack before a drag snaps to a neighbour. */
 const SNAP_PX = 6;
@@ -24,6 +24,8 @@ const POPOVER_MIN_H = 90;
 const MIN_TEXT_W = 24;
 /** Slack around a text box's words, so clicking one needs no precision. */
 const HIT_SLACK = 4;
+/** How far a press may wander and still count as a click, not a drag. */
+const CLICK_SLOP = 4;
 /**
  * Text boxes are drawn in the same face and leading the export uses, so what
  * wraps where on screen is what wraps where on paper. pdf-lib has Helvetica
@@ -62,17 +64,27 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
   const [marquee, setMarquee] = useState<{ a: Pt; b: Pt } | null>(null);
   const marqueeRef = useRef<{ a: Pt; b: Pt } | null>(null);
   const [guides, setGuides] = useState<Guide[]>([]);
-  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; ids: string[] } | null>(null);
   /** Whatever is being dragged rides above its neighbours for the drag. */
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  /** Every selected annotation's starting data, while a group drag is running. */
+  const groupDrag = useRef<{ id: string; type: AnnType; data: any }[] | null>(null);
+  /** A press on a group member, waiting to see whether it becomes a drag. */
+  const pressed = useRef<{ id: string; x: number; y: number } | null>(null);
 
-  /** Right click on an annotation opens its layer menu. */
+  /**
+   * Right click opens the layer menu. Inside a multiple selection it acts on all
+   * of it and says so; outside one it narrows the selection to what the pointer
+   * is actually on, so the menu never claims more than it will do.
+   */
   function openMenu(e: React.MouseEvent, id: string) {
     if (tool !== 'select') return;
     e.preventDefault();
     e.stopPropagation();
-    act().select(id, false);
-    setMenu({ ...localPoint(shellRef.current!, e), id });
+    const many = selectedIds.length > 1 && selectedIds.includes(id);
+    const ids = many ? [...selectedIds] : [id];
+    if (!many) act().select(id, false);
+    setMenu({ ...localPoint(shellRef.current!, e), ids });
   }
 
   const drawing = tool !== 'select';
@@ -187,14 +199,46 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
       if (ERASABLE.includes(a.type)) act().remove([a._id]);
       return;
     }
-    act().select(a._id, e.shiftKey || e.ctrlKey || e.metaKey);
+    // Only the primary button changes what is selected. A right press used to
+    // narrow a multiple selection down to one before the menu had even opened,
+    // so the menu could never speak for the group.
+    if (e.button !== 0) return;
+
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    if (!additive && selectedIds.length > 1 && selectedIds.includes(a._id)) {
+      // Pressing something already in the selection keeps the selection: that
+      // press is how dragging the group starts. Narrowing here is what made a
+      // group come apart the moment you touched one of its members. If the
+      // press turns out to be a click and not a drag, the listener below
+      // narrows to this one after the fact.
+      pressed.current = { id: a._id, x: e.clientX, y: e.clientY };
+      return;
+    }
+    pressed.current = null;
+    act().select(a._id, additive);
   }
+
+  /**
+   * Finishes the decision `hit` deferred. A press on a group member that never
+   * moved was a click, and a click picks that one thing out of the group.
+   */
+  useEffect(() => {
+    const up = (e: PointerEvent) => {
+      const p = pressed.current;
+      pressed.current = null;
+      if (!p || e.button !== 0) return;
+      if (Math.abs(e.clientX - p.x) < CLICK_SLOP && Math.abs(e.clientY - p.y) < CLICK_SLOP)
+        act().select(p.id, false);
+    };
+    window.addEventListener('pointerup', up);
+    return () => window.removeEventListener('pointerup', up);
+  }, []);
 
   // Drawings live in SVG, so they get their own drag rather than the one
   // HtmlAnnotation uses. Strokes move point by point, highlights move a rect.
   function startShapeDrag(e: React.PointerEvent, a: Annotation) {
     hit(e, a);
-    if (tool !== 'select' || a.locked) return;
+    if (e.button !== 0 || tool !== 'select' || a.locked) return;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
     const box = rectToBox(viewport, bboxOf(a));
     shapeDrag.current = {
@@ -211,6 +255,7 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
       boxH: box.height,
     };
     setDraggingId(a._id);
+    beginGroup();
     // Float this page over its neighbours, or a drawing dragged past the edge
     // slides underneath the next page and looks like it vanished.
     liftPage(shellRef.current, true);
@@ -221,6 +266,7 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
     if (!d) return;
     const dx = (e.clientX - d.sx) / viewport.scale;
     const dy = (e.clientY - d.sy) / viewport.scale;
+    if (groupDrag.current) return moveGroup(dx, -dy, e.altKey);
     let next = translate(d.type, d.data, dx, -dy);
     if (!e.altKey) {
       const box = bboxOf({ type: d.type, data: next, style: {} } as any);
@@ -244,6 +290,9 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
     setDraggingId(null);
     setGuides([]);
     liftPage(shellRef.current, false);
+    // A group keeps its page. Re-homing is one annotation at a time, and half a
+    // selection landing on the next page is worse than none of it.
+    if (endGroup()) return;
     if (!d || !e) return;
 
     const shell = document
@@ -559,6 +608,49 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
   const chosen = mine.filter((a) => isSelected(a._id));
   const frame = tool === 'select' && chosen.length ? unionBox(chosen.map(bboxOf)) : null;
   const only = chosen.length === 1 ? chosen[0] : null;
+
+  /**
+   * Dragging one of several selected annotations moves all of them. Each kind
+   * owns its own pointer handling, drawings here and boxes in HtmlAnnotation,
+   * so both ask this instead of moving the one thing they were grabbed by.
+   * Locked members are left out rather than blocking the drag.
+   */
+  const movable = chosen.filter((a) => !a.locked);
+  const isGroup = movable.length > 1;
+
+  function beginGroup() {
+    if (!isGroup) return false;
+    groupDrag.current = movable.map((a) => ({ id: a._id, type: a.type, data: { ...a.data } }));
+    return true;
+  }
+
+  function moveGroup(dx: number, dy: number, noSnap: boolean) {
+    const items = groupDrag.current;
+    if (!items) return;
+    let ax = dx;
+    let ay = dy;
+    if (!noSnap) {
+      // The group snaps as one box. Snapping each member on its own would send
+      // them to different guides and pull the selection apart.
+      const boxes = items.map((it) =>
+        bboxOf({ type: it.type, data: translate(it.type, it.data, dx, dy), style: {} } as any)
+      );
+      const snap = computeSnap(unionBox(boxes), neighbours, pageSize, SNAP_PX / viewport.scale);
+      ax += snap.dx;
+      ay += snap.dy;
+      setGuides(snap.guides);
+    } else {
+      setGuides([]);
+    }
+    for (const it of items) act().update(it.id, translate(it.type, it.data, ax, ay));
+  }
+
+  function endGroup() {
+    const was = groupDrag.current;
+    groupDrag.current = null;
+    setGuides([]);
+    return !!was;
+  }
   // A locked selection shows its frame but offers nothing to grab.
   const anyLocked = chosen.some((a) => a.locked);
   // The frame turns with a single rotated annotation so the two never drift
@@ -794,8 +886,12 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
                   just the mark. Chasing a two point line with the pointer to
                   move it again is needless precision, and the same rule then
                   holds for drawings as for boxes.
+
+                  A locked one keeps the box too. startShapeDrag refuses to move
+                  it, but the right click has to land somewhere: without this,
+                  unlocking meant hitting a stroke a couple of points wide.
                 */}
-                {isSelected(a._id) && tool === 'select' && !a.locked && (() => {
+                {isSelected(a._id) && tool === 'select' && (() => {
                   const g = rectToBox(viewport, bboxOf(a));
                   return (
                     <rect
@@ -804,7 +900,10 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
                       width={g.width}
                       height={g.height}
                       fill="transparent"
-                      style={{ pointerEvents: 'fill', cursor: 'move' }}
+                      style={{
+                        pointerEvents: 'fill',
+                        cursor: a.locked ? 'default' : 'move',
+                      }}
                       onPointerDown={(e) => startShapeDrag(e, a)}
                       onContextMenu={(e) => openMenu(e, a._id)}
                       onPointerMove={moveShape}
@@ -826,6 +925,10 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
                 editing={editingId === a._id}
                 onHit={(e: React.PointerEvent) => hit(e, a)}
                 onMenu={(e: React.MouseEvent) => openMenu(e, a._id)}
+                group={isGroup && isSelected(a._id)}
+                onGroupStart={beginGroup}
+                onGroupMove={moveGroup}
+                onGroupEnd={endGroup}
                 onGuides={setGuides}
                 onDragging={(on: boolean) => setDraggingId(on ? a._id : null)}
                 onChange={(data: any) => act().update(a._id, data)}
@@ -916,7 +1019,7 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
               // Handles sit on the corners, which is exactly where a text box
               // starts, so a right click there would otherwise be swallowed by
               // a handle and never reach the annotation's menu.
-              onContextMenu={(e) => only && openMenu(e, only._id)}
+              onContextMenu={(e) => chosen.length > 0 && openMenu(e, (only ?? chosen[0])._id)}
             >
               {canResize &&
                 CORNERS.map((c) => (
@@ -956,25 +1059,32 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
         );
       })()}
 
-      {menu && (
-        <LayerMenu
-          at={menu}
-          locked={!!mine.find((a) => a._id === menu.id)?.locked}
-          onPick={(where) => {
-            act().setLayer(menu.id, where);
-            setMenu(null);
-          }}
-          onLock={() => {
-            act().toggleLock(menu.id);
-            setMenu(null);
-          }}
-          onDelete={() => {
-            act().remove([menu.id]);
-            setMenu(null);
-          }}
-          onClose={() => setMenu(null)}
-        />
-      )}
+      {menu && (() => {
+        const on = mine.filter((a) => menu.ids.includes(a._id));
+        // Locked only when every one of them is, so a mixed selection offers to
+        // lock the rest rather than quietly unlocking the locked ones.
+        const allLocked = on.length > 0 && on.every((a) => a.locked);
+        return (
+          <LayerMenu
+            at={menu}
+            count={menu.ids.length}
+            locked={allLocked}
+            onPick={(where) => {
+              for (const id of menu.ids) act().setLayer(id, where);
+              setMenu(null);
+            }}
+            onLock={() => {
+              for (const a of on) if (!!a.locked === allLocked) act().toggleLock(a._id);
+              setMenu(null);
+            }}
+            onDelete={() => {
+              act().remove(menu.ids);
+              setMenu(null);
+            }}
+            onClose={() => setMenu(null)}
+          />
+        );
+      })()}
 
       <input ref={fileRef} type="file" accept="image/*" className="hidden"
         onChange={onImageChosen} />
@@ -1012,11 +1122,16 @@ const LAYER_ITEMS: [Where, string][] = [
   ['back', 'Send to back'],
 ];
 
-/** Layer menu for one annotation. Closes on the next pointer down anywhere. */
+/**
+ * Layer menu for what is selected, one annotation or several. Closes on the
+ * next pointer down anywhere.
+ */
 function LayerMenu({
-  at, locked, onPick, onLock, onDelete, onClose,
+  at, count, locked, onPick, onLock, onDelete, onClose,
 }: {
   at: { x: number; y: number };
+  /** How many annotations it acts on, which is what makes the copy plural. */
+  count: number;
   locked: boolean;
   onPick: (w: Where) => void;
   onLock: () => void;
@@ -1051,27 +1166,34 @@ function LayerMenu({
     };
   }, []);
 
+  const many = count > 1;
   const item = 'block w-full text-left px-3 py-1 text-sm hover:bg-neutral-100';
   return (
     <div
       ref={box}
-      className="absolute bg-white rounded shadow-lg py-1 text-neutral-800 w-40"
+      className="absolute bg-white rounded shadow-lg py-1 text-neutral-800 w-48"
       // Above the selection frame, which sits at 1000 and would otherwise draw
       // its outline and handles across the menu.
       style={{ left: at.x, top: at.y, pointerEvents: 'auto', zIndex: 3000 }}
       onPointerDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
+      {many && (
+        <div className="px-3 pb-1 text-[11px] text-neutral-500">{count} selected</div>
+      )}
       {!locked &&
         LAYER_ITEMS.map(([w, label]) => (
           <button key={w} className={item} onClick={() => onPick(w)}>{label}</button>
         ))}
       {!locked && <div className="h-px bg-neutral-200 my-1" />}
       <button className={item} onClick={onLock}>
-        {locked ? 'Unlock' : 'Lock in place'}
+        {locked ? (many ? `Unlock all ${count}` : 'Unlock')
+          : many ? `Lock all ${count} in place` : 'Lock in place'}
       </button>
       {!locked && (
-        <button className={`${item} text-rose-600`} onClick={onDelete}>Delete</button>
+        <button className={`${item} text-rose-600`} onClick={onDelete}>
+          {many ? `Delete ${count} items` : 'Delete'}
+        </button>
       )}
     </div>
   );
@@ -1087,7 +1209,8 @@ function liftPage(el: HTMLElement | null | undefined, on: boolean) {
 }
 
 function HtmlAnnotation({
-  ann, viewport, pageSize, neighbours, selected, editing, inert,
+  ann, viewport, pageSize, neighbours, selected, editing, inert, group,
+  onGroupStart, onGroupMove, onGroupEnd,
   onHit, onChange, onDelete, onGuides, onMoveToPage, onEdit, onMenu, onDragging, erasing,
   onBlurEmpty,
 }: any) {
@@ -1127,8 +1250,9 @@ function HtmlAnnotation({
     e.stopPropagation();
     onHit(e);
     // The eraser does not move things. Without this a swipe across a text box
-    // drags it instead of passing over it. A locked annotation never moves.
-    if (erasing || ann.locked) return;
+    // drags it instead of passing over it. A locked annotation never moves, and
+    // only the primary button drags at all.
+    if (e.button !== 0 || erasing || ann.locked) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     // The grab offset is what makes a cross-page drop land under the cursor
     // rather than snapping its corner there.
@@ -1154,12 +1278,15 @@ function HtmlAnnotation({
       boxW: box.width,
       boxH: box.height,
     };
+    // Grabbing one of several selected annotations moves the whole selection.
+    if (group) onGroupStart();
   }
 
   function move(e: React.PointerEvent) {
     if (!drag.current) return;
     const dx = (e.clientX - drag.current.sx) / scale;
     const dy = (e.clientY - drag.current.sy) / scale;
+    if (group) return onGroupMove(dx, -dy, e.altKey);
 
     let next = translate(ann.type, drag.current.data, dx, -dy);
     if (!e.altKey) {
@@ -1207,6 +1334,12 @@ function HtmlAnnotation({
     liftPage(d.self, false);
     setDragging(false);
     onDragging?.(false);
+    // A group keeps its page: re-homing is one annotation at a time, and half a
+    // selection landing on the next page is worse than none of it.
+    if (group) {
+      onGroupEnd();
+      return;
+    }
     if (d.mode !== 'move') return;
 
     const shell = document
