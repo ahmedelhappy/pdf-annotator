@@ -190,7 +190,10 @@ in. Everything after is one commit per change.
   handles set the width, the corner handles scale the type, and the height is
   measured from the rendered block and followed. Dragging a height by hand left
   text either hanging out of the bottom or floating in empty space.
-  The measurement takes `HIT_SLACK` off, because that padding is a fixed number
+  It measures whichever of the two is on screen, the rendered block or the
+  editor, so a box resized mid-sentence still follows its words: with the effect
+  bailing out while editing, a side drag left the text hanging out of the
+  bottom. The measurement takes `HIT_SLACK` off, because that padding is a fixed number
   of screen pixels for the click target and has nothing to do with the text.
   Leaving it in stopped the height being a constant multiple of the type, so a
   corner drag could not hold the box's proportions: it drifted 8 percent. A
@@ -211,6 +214,9 @@ in. Everything after is one commit per change.
   - A rebuild always puts the caret somewhere, falling back to the end. Leaving
     it nowhere makes the box silently stop taking input, which reads as a box
     that refuses to be typed in or deleted from.
+  Each line carries its own font size, so a size set from outside, by a corner
+  drag or the toolbar, has to be written back onto the lines: the container
+  alone changing left the text at whatever size it was built at.
   The editor sets `outline: 'none'` itself. Tailwind's `outline-none` only makes
   the outline transparent, so the global `:focus-visible` rule painted one over
   it and the box wore two frames at once.
@@ -253,6 +259,9 @@ in. Everything after is one commit per change.
 - A locked annotation keeps its transparent hit box. Suppressing it left the
   right click, and so unlocking, needing a hit on a stroke two points wide.
   `store.nudge` filters locked ids the way `store.remove` does.
+- The toolbar's font size box reads the *selected annotation's* size, not the
+  pen's, or dragging a corner scaled the text on the page while the number sat
+  unchanged at whatever the pen happened to be.
 - `store.style` is persisted to localStorage and validated on the way back in.
   `lastPage` on the document row follows the reader on a debounce and is
   remapped by `applyRemap` and carried in the page-op snapshot, so undo puts the

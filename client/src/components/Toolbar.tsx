@@ -90,9 +90,17 @@ export default function Toolbar({
    * selection that contains something with words in it, where changing the
    * number resizes what is already on the page through setStyle.
    */
-  const showFont =
-    tool === 'text' || tool === 'note' ||
-    annotations.some((a) => selectedIds.includes(a._id) && (a.type === 'text' || a.type === 'note'));
+  const withWords = annotations.filter(
+    (a) => selectedIds.includes(a._id) && (a.type === 'text' || a.type === 'note')
+  );
+  const showFont = tool === 'text' || tool === 'note' || withWords.length > 0;
+
+  /**
+   * What the box reads. With something selected it is that annotation's own
+   * size, not the pen's, or dragging a corner would scale the text on the page
+   * while the number sat unchanged at whatever the pen happened to be.
+   */
+  const shownFont = withWords.length ? withWords[0].style?.fontSize ?? style.fontSize : style.fontSize;
 
   return (
     <div className="flex items-center gap-2 px-3 py-2 bg-neutral-900 text-neutral-200 border-b border-neutral-800 flex-wrap">
@@ -201,8 +209,8 @@ export default function Toolbar({
             min={MIN_FONT}
             max={MAX_FONT}
             step={1}
-            value={style.fontSize}
-            title={`Font size ${style.fontSize} points`}
+            value={Math.round(shownFont * 10) / 10}
+            title={`Font size ${Math.round(shownFont * 10) / 10} points`}
             aria-label="Font size"
             className="w-14 bg-neutral-800 rounded px-1 py-1 text-sm text-neutral-200"
             onChange={(e) => {
@@ -211,9 +219,9 @@ export default function Toolbar({
             }}
           />
           <button className={btn} title="Smaller text"
-            onClick={() => setStyle({ fontSize: clampFont(style.fontSize - 2) })}>A-</button>
+            onClick={() => setStyle({ fontSize: clampFont(shownFont - 2) })}>A-</button>
           <button className={btn} title="Larger text"
-            onClick={() => setStyle({ fontSize: clampFont(style.fontSize + 2) })}>A+</button>
+            onClick={() => setStyle({ fontSize: clampFont(shownFont + 2) })}>A+</button>
         </span>
       )}
 

@@ -1408,6 +1408,11 @@ function placeCaret(root: HTMLElement, at: number) {
   if (last) put(last, last.childNodes.length ? 1 : 0);
 }
 
+/** The editor's text, with the browser's line breaks turned back into newlines. */
+function readRaw(el: HTMLElement): string {
+  return el.innerText.replace(/\r\n/g, '\n').replace(/\n$/, '');
+}
+
 /** What kind each line is, as one string, for telling a shape change apart. */
 function shapeOf(text: string): string {
   return parseMarkdown(text).map((b) => `${b.kind}${b.depth}`).join('|');
@@ -1482,6 +1487,17 @@ function MarkdownInput({
     shape.current = shapeOf(first.current);
     // Starting content only. Every keystroke after this is handled below.
   }, []);
+
+  /**
+   * Each line carries its own font size, so a size set from outside, by dragging
+   * a corner or by the toolbar, has to be written onto the lines. The container
+   * alone changing left the text at whatever size it was built at.
+   */
+  useEffect(() => {
+    const el = inputRef.current as HTMLElement | null;
+    if (!el) return;
+    restyleLines(el, readRaw(el), size);
+  }, [size]);
 
   function onInput(el: HTMLElement) {
     const raw = el.innerText.replace(/\r\n/g, '\n').replace(/\n$/, '');
@@ -1606,15 +1622,19 @@ function HtmlAnnotation({
    */
   const blockRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (ann.type !== 'text' || editing) return;
-    const el = blockRef.current;
+    if (ann.type !== 'text') return;
+    // Whichever is on screen. While you are typing the words live in the
+    // editor, so that is what gets measured: without this a box resized
+    // mid-sentence kept its old height and the text hung out of the bottom.
+    const el = editing ? inputRef.current : blockRef.current;
     if (!el) return;
     // The block carries HIT_SLACK of padding so clicking its words needs no
     // precision. That slack is a fixed number of screen pixels and has nothing
     // to do with the text, so it comes off before the height is stored: leave
     // it in and the box stops being a constant multiple of its type, which is
-    // what stopped a corner drag holding the box's proportions.
-    const need = (el.scrollHeight - 2 * HIT_SLACK) / scale;
+    // what stopped a corner drag holding the box's proportions. The editor has
+    // no such padding.
+    const need = (el.scrollHeight - (editing ? 0 : 2 * HIT_SLACK)) / scale;
     // A threshold, or rounding at one zoom level would set the height back and
     // forth for ever.
     if (Math.abs(need - ann.data.h) > 0.5) {
