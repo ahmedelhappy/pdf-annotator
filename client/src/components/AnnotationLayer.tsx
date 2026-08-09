@@ -449,19 +449,33 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
   // Text-mode highlight rides on the pdf.js text layer, so it snaps to real
   // glyph boxes instead of a hand-drawn rectangle.
   function onTextSelectionEnd() {
-    if (tool !== 'highlight' || !textLayerEl) return;
+    if (tool !== 'highlight') return;
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
     const range = selection.getRangeAt(0);
-    if (!textLayerEl.contains(range.commonAncestorContainer)) return;
-
-    const shell = shellRef.current!.getBoundingClientRect();
+    // The document's own glyphs, or the words in a text box on this page: both
+    // are screen rectangles over the same shell, so both convert the same way.
+    // A selection that started outside and ran across a box has neither as its
+    // common ancestor, and lays nothing down rather than something wrong.
+    const at = range.commonAncestorContainer;
+    if (!textLayerEl?.contains(at)) return;
 
     // Collect and drop the selection before anything async. This can fire
     // twice for one selection, and any await in between let both runs see a
     // live selection and lay a second highlight over the first.
+    const rects = Array.from(range.getClientRects());
+    selection.removeAllRanges();
+    markRects(rects);
+  }
+
+  /**
+   * Lays one highlight over the rectangles a range covers, whether those came
+   * from the document's own glyphs or from the words in a text box.
+   */
+  function markRects(rects: DOMRect[]) {
+    const shell = shellRef.current!.getBoundingClientRect();
     const seen = new Set<string>();
-    const rects = Array.from(range.getClientRects()).filter((r) => {
+    const kept = rects.filter((r) => {
       if (r.width < 1 || r.height < 1) return false;
       // getClientRects can repeat a line when the range spans nested spans.
       const key = [r.left, r.top, r.right, r.bottom].map(Math.round).join();
@@ -469,13 +483,12 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
       seen.add(key);
       return true;
     });
-    selection.removeAllRanges();
-    if (!rects.length) return;
+    if (!kept.length) return;
 
     // One annotation for the whole selection, carrying a box per line. Making
     // one annotation per line meant undo peeled the highlight off a line at a
     // time and the eraser only ever caught the line under the cursor.
-    const boxes = rects.map((r) =>
+    const boxes = kept.map((r) =>
       rectToPdf(
         viewport,
         { x: r.left - shell.left, y: r.top - shell.top },
@@ -492,6 +505,40 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
       data: { ...bounds, rects: boxes.length > 1 ? boxes : undefined },
       style: { ...style, opacity: Math.min(style.opacity, 0.4) },
     });
+  }
+
+  /**
+   * The highlighter over a text box's own words. Those words are ours, not
+   * pdf.js's, and the browser will not extend a drag selection into an overlay
+   * sitting above the text layer: the caret anchors on the press and then the
+   * selection stays collapsed however far you drag. So the two ends of the drag
+   * are turned into caret positions and the range is built by hand.
+   *
+   * Both ends are pulled inside the words first, because dragging a little past
+   * the last one is how anybody marks up to the end of a line, and a caret taken
+   * outside the box lands in the page underneath instead.
+   */
+  function markInBox(el: HTMLElement, a: Pt, z: Pt) {
+    const b = el.getBoundingClientRect();
+    const inside = (p: Pt) => ({
+      x: Math.min(Math.max(p.x, b.left + 1), b.right - 1),
+      y: Math.min(Math.max(p.y, b.top + 1), b.bottom - 1),
+    });
+    const from = inside(a);
+    const to = inside(z);
+    const c1 = document.caretRangeFromPoint(from.x, from.y);
+    const c2 = document.caretRangeFromPoint(to.x, to.y);
+    if (!c1 || !c2 || !el.contains(c1.startContainer) || !el.contains(c2.startContainer)) return;
+
+    // Whichever way the drag went, the range runs forwards.
+    const fwd = c1.compareBoundaryPoints(Range.START_TO_START, c2) <= 0;
+    const head = fwd ? c1 : c2;
+    const tail = fwd ? c2 : c1;
+    const range = document.createRange();
+    range.setStart(head.startContainer, head.startOffset);
+    range.setEnd(tail.startContainer, tail.startOffset);
+    if (range.collapsed) return;
+    markRects(Array.from(range.getClientRects()));
   }
 
   async function onImageChosen(e: React.ChangeEvent<HTMLInputElement>) {
@@ -988,6 +1035,8 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
                 pageSize={pageSize}
                 neighbours={neighbours}
                 inert={inert}
+                marking={tool === 'highlight'}
+                onMark={markInBox}
                 erasing={tool === 'eraser'}
                 selected={isSelected(a._id)}
                 editing={editingId === a._id}
@@ -1305,13 +1354,15 @@ function liftPage(el: HTMLElement | null | undefined, on: boolean) {
 }
 
 function HtmlAnnotation({
-  ann, viewport, pageSize, neighbours, selected, editing, inert, group,
+  ann, viewport, pageSize, neighbours, selected, editing, inert, marking, onMark, group,
   onGroupStart, onGroupMove, onGroupEnd,
   onHit, onChange, onDelete, onGuides, onMoveToPage, onEdit, onMenu, onDragging, erasing,
   onBlurEmpty,
 }: any) {
   const drag = useRef<any>(null);
   const popDrag = useRef<any>(null);
+  /** Where a highlighter drag across this box's words began. */
+  const markFrom = useRef<Pt | null>(null);
   const [dragging, setDragging] = useState(false);
   const scale = viewport.scale;
 
@@ -1381,6 +1432,10 @@ function HtmlAnnotation({
   }, [editing]);
 
   function start(e: React.PointerEvent, mode: 'move') {
+    // The highlighter borrows a text box's own words: the press begins a text
+    // selection, so it must neither pick the box up nor select it. Letting it
+    // through is what collapsed the selection halfway across a box.
+    if (marking && ann.type === 'text') return;
     e.stopPropagation();
     onHit(e);
     // The eraser does not move things. Without this a swipe across a text box
@@ -1622,7 +1677,9 @@ function HtmlAnnotation({
       onPointerMove={move}
       onPointerUp={end}
       onContextMenu={onMenu}
-      onDoubleClick={() => ann.type === 'text' && onEdit()}
+      // Under the highlighter a double click picks a word out to mark, the way
+      // it does anywhere else, so it must not open the editor instead.
+      onDoubleClick={() => !marking && ann.type === 'text' && onEdit()}
     >
       {ann.type === 'image' ? (
         <img src={api.assetUrl(ann.data.assetId)} draggable={false} alt=""
@@ -1632,7 +1689,7 @@ function HtmlAnnotation({
         // the words are clickable. The padding gives a few pixels of slack so
         // you do not have to land exactly on a glyph.
         <div
-          className="whitespace-pre-wrap break-words select-none"
+          className="whitespace-pre-wrap break-words"
           style={{
             width: 'fit-content',
             // The padding is slack, not text, so the words are allowed the
@@ -1646,9 +1703,31 @@ function HtmlAnnotation({
             lineHeight: TEXT_LEADING,
             padding: HIT_SLACK,
             margin: -HIT_SLACK,
-            pointerEvents: 'auto',
-            cursor: ann.locked ? 'default' : 'move',
+            // A leaf that opts back in stays opted in whatever its parents say,
+            // so this has to answer for itself: with a plain `auto` the words
+            // were the top thing on the page under every drawing tool, and a
+            // stroke aimed at a text box picked it up and dragged it instead.
+            // The highlighter is the exception, since it works by selecting the
+            // words rather than by drawing over them.
+            pointerEvents: marking ? 'auto' : inert ? 'none' : 'auto',
+            userSelect: 'none',
+            cursor: marking ? 'text' : ann.locked ? 'default' : 'move',
           }}
+          // Marking runs the drag itself rather than leaving it to the browser,
+          // for the reason markInBox gives. Capturing the pointer means a drag
+          // that runs off the end of the last word still finishes here.
+          onPointerDown={(e) => {
+            if (!marking) return;
+            e.preventDefault();
+            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+            markFrom.current = { x: e.clientX, y: e.clientY };
+          }}
+          onPointerUp={(e) => {
+            const from = markFrom.current;
+            markFrom.current = null;
+            if (from) onMark(e.currentTarget as HTMLElement, from, { x: e.clientX, y: e.clientY });
+          }}
+          onPointerCancel={() => { markFrom.current = null; }}
         >
           {ann.data.text || ''}
         </div>

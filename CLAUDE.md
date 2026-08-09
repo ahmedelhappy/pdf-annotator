@@ -352,6 +352,11 @@ eats the drag, so text selection silently never forms. Rules that hold now:
 
 - `.ann-root`, `.ann-svg`, `.ann-html`, `.ann-node` are all
   `pointer-events: none`. Only leaves opt back in.
+- A leaf that opts back in stays opted in **whatever its parents say**, so every
+  leaf has to answer for `inert` itself. A text box's words carried a plain
+  `pointer-events: auto` and were the top thing on the page under every drawing
+  tool: a stroke, an area highlight or a highlighter drag aimed at a text box
+  picked the box up and dragged it instead of marking it.
 - Every annotation is one `.ann-node` in a single stacking order, drawings and
   boxes alike, so whatever was added last sits on top. Do not split drawings
   back into a shared SVG: a picture then covers every stroke regardless of age.
@@ -368,7 +373,18 @@ eats the drag, so text selection silently never forms. Rules that hold now:
   drags that begin on a glyph. Note the text layer container fills the page, so
   test `target !== textLayerEl` as well as `contains`.
 - While the highlight tool is active every annotation goes inert (`inert` in
-  AnnotationLayer), or a drag crossing one collapses the selection.
+  AnnotationLayer), or a drag crossing one collapses the selection. A text box
+  is the one exception: its words take the pointer so they can be marked, and
+  `start` refuses to begin a drag or change the selection while `marking`.
+- The highlighter over a text box builds its range by hand, in `markInBox`,
+  from `caretRangeFromPoint` at the two ends of the drag. The browser will not
+  extend a drag selection into an overlay sitting above the text layer: the
+  caret anchors on the press and then stays collapsed however far you drag,
+  though a range built in code over the same words is fine. Both ends are
+  clamped inside the words first, since dragging a little past the last one is
+  how anybody marks to the end of a line. `markRects` is the shared tail that
+  both this and the text layer's own selection go through, so a highlight is one
+  annotation with a box per line either way.
 - The text layer is a *sibling* of the overlay, so selection-end is a window
   `mouseup` listener, not a handler on the overlay. It is scoped per page by
   the `textLayerEl.contains(...)` check.
