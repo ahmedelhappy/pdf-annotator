@@ -192,12 +192,24 @@ in. Everything after is one commit per change.
   text either hanging out of the bottom or floating in empty space.
 - Editing a text box is a `contenteditable`, not a textarea, so the markdown
   takes effect as you type. Chrome's plaintext-only mode keeps the box in one
-  node with newline characters, so there are no line elements to style: the
-  lines are rebuilt on every keystroke and the caret put back by character
-  offset, exact because the model is one child per line and one text node per
-  child. Rebuilding is skipped while an input method composes. Inline emphasis
-  still settles on deselect, since re-cutting spans under the caret is the one
-  thing that does move it.
+  node with newline characters, so there are no line elements to style and this
+  builds them. Three rules keep it stable, and all three were bugs first:
+  - The editor takes its height from its **content**. With `h-full` its
+    `scrollHeight` reported the box's own height straight back, so every
+    keystroke measured the box, added slack and grew it again, two points at a
+    time, for ever.
+  - The nodes are rebuilt **only when the line count changes**, which is Enter,
+    paste and deleting across a break. Ordinary typing only restyles, and only
+    when a line changes what kind of line it is, so the caret is never touched
+    and no keystroke pays for a caret measurement.
+  - A rebuild always puts the caret somewhere, falling back to the end. Leaving
+    it nowhere makes the box silently stop taking input, which reads as a box
+    that refuses to be typed in or deleted from.
+  Markers stay visible while you are in the box, the way a source mode editor
+  works, and disappear when you click away. Hiding them while editing means the
+  text on screen is no longer the text being edited, and every caret offset has
+  to be mapped through the hidden characters. Inline emphasis settles on deselect
+  for the same reason: re-cutting spans under the caret is what moves it.
 - Anything that must sit above the page uses z-index 4000. The selection frame
   is 1000 and its menu 3000, so Tailwind's `z-50` was not enough and a selection
   drew across the shortcut sheet.

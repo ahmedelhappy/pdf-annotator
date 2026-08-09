@@ -734,19 +734,28 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
     }
 
     if (d.mode === 'font') {
-      // Pulling a corner scales the type, the way a text box works on a
-      // whiteboard. The width goes with it so the words wrap where they did.
+      // Pulling a corner scales the type, the way a text box does on a
+      // whiteboard, and the width goes with it so the words wrap where they
+      // did. The height needs no help: it follows the words on its own.
       const p = rotatePoint(toPdf(viewport, q.x, q.y), d.centre, -d.spin);
       const len = d.span.x * d.span.x + d.span.y * d.span.y;
-      const s = len
+      const raw = len
         ? ((p.x - d.anchor.x) * d.span.x + (p.y - d.anchor.y) * d.span.y) / len
         : 1;
+      const s = Math.max(0.05, raw);
       for (const b of d.before) {
         const was = b.style?.fontSize ?? 14;
-        const size = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(was * Math.max(0.05, s))));
-        if (size !== was) act().updateStyle([b.id], { fontSize: size });
-        const w = Math.max(MIN_TEXT_W, b.data.w * (size / was));
-        act().update(b.id, { ...b.data, w });
+        const size = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(was * s)));
+        if (size !== act().annotations.find((a) => a._id === b.id)?.style?.fontSize)
+          act().updateStyle([b.id], { fontSize: size });
+        // Scaled by the drag itself rather than by the rounded size, or the
+        // width would jump a step at a time as the size crossed each whole
+        // point, and the box would judder as you pulled.
+        const w = Math.max(MIN_TEXT_W, b.data.w * s);
+        // The corner opposite the one being pulled stays where it is. Without
+        // this the box walks across the page as it grows.
+        const x = d.anchor.x <= b.data.x + b.data.w / 2 ? b.data.x : b.data.x + b.data.w - w;
+        act().update(b.id, { ...b.data, w, x });
       }
       return;
     }
@@ -1394,6 +1403,11 @@ function placeCaret(root: HTMLElement, at: number) {
   if (last) put(last, last.childNodes.length ? 1 : 0);
 }
 
+/** What kind each line is, as one string, for telling a shape change apart. */
+function shapeOf(text: string): string {
+  return parseMarkdown(text).map((b) => `${b.kind}${b.depth}`).join('|');
+}
+
 /** One element per line, so a line is something that can be styled. */
 function fillLines(el: HTMLElement, text: string, size: number) {
   el.replaceChildren(
@@ -1453,23 +1467,39 @@ function MarkdownInput({
 }) {
   const first = useRef(text);
   const composing = useRef(false);
+  /** The kinds of line last styled, so a keystroke that changes nothing does nothing. */
+  const shape = useRef('');
 
   useEffect(() => {
     const el = inputRef.current as HTMLElement | null;
-    if (el) fillLines(el, first.current, size);
+    if (!el) return;
+    fillLines(el, first.current, size);
+    shape.current = shapeOf(first.current);
     // Starting content only. Every keystroke after this is handled below.
   }, []);
 
   function onInput(el: HTMLElement) {
     const raw = el.innerText.replace(/\r\n/g, '\n').replace(/\n$/, '');
-    if (composing.current) {
-      // Style what can be styled and leave the nodes alone until it lands.
-      restyleLines(el, raw, size);
-    } else {
+    const lines = raw.split('\n').length;
+    const next = shapeOf(raw);
+
+    if (!composing.current && el.children.length !== lines) {
+      // The browser's own structure has drifted from one element per line,
+      // which happens on Enter, on paste, and on deleting across a line break.
+      // This is the only time the nodes are rebuilt, so it is the only time the
+      // caret has to be put back, and ordinary typing never pays for it.
       const at = caretOffset(el);
       fillLines(el, raw, size);
-      if (at >= 0) placeCaret(el, at);
+      // Falling back to the end rather than leaving the caret nowhere. A lost
+      // caret makes the box stop taking input at all, which reads as a box that
+      // refuses to be typed in or deleted from.
+      placeCaret(el, at < 0 ? raw.length : at);
+    } else if (next !== shape.current) {
+      // A line changed what kind of line it is. Styling touches no nodes, so
+      // the caret is not involved.
+      restyleLines(el, raw, size);
     }
+    shape.current = next;
     onText(raw, el.scrollHeight);
   }
 
@@ -1480,7 +1510,10 @@ function MarkdownInput({
       suppressContentEditableWarning
       role="textbox"
       aria-multiline="true"
-      className="w-full h-full bg-transparent outline-none overflow-hidden whitespace-pre-wrap break-words"
+      // Height comes from the content, never from the box. With h-full the
+      // element reported the box's own height back as its scrollHeight, so
+      // every keystroke measured the box, added slack, and grew it again.
+      className="w-full bg-transparent outline-none whitespace-pre-wrap break-words"
       style={{
         color,
         fontSize: size,
