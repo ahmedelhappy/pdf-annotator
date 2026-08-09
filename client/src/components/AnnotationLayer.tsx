@@ -745,7 +745,12 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
       const s = Math.max(0.05, raw);
       for (const b of d.before) {
         const was = b.style?.fontSize ?? 14;
-        const size = Math.min(MAX_FONT, Math.max(MIN_FONT, Math.round(was * s)));
+        // Kept to a tenth of a point rather than a whole one. The height comes
+        // from the words, so the box only holds its proportions if the type and
+        // the width scale by the same amount, and whole points are too coarse
+        // to do that at small sizes.
+        const want = Math.round(was * s * 10) / 10;
+        const size = Math.min(MAX_FONT, Math.max(MIN_FONT, want));
         if (size !== act().annotations.find((a) => a._id === b.id)?.style?.fontSize)
           act().updateStyle([b.id], { fontSize: size });
         // Scaled by the drag itself rather than by the rounded size, or the
@@ -1520,6 +1525,11 @@ function MarkdownInput({
         fontFamily: TEXT_FONT,
         lineHeight: TEXT_LEADING,
         pointerEvents: 'auto',
+        // No focus ring. Tailwind's outline-none only makes the outline
+        // transparent, so the global focus-visible rule painted one anyway and
+        // the box wore two frames at once: this and the selection frame, which
+        // is already showing you what has focus.
+        outline: 'none',
       }}
       onPointerDown={(e) => e.stopPropagation()}
       onInput={(e) => onInput(e.currentTarget)}
@@ -1599,7 +1609,12 @@ function HtmlAnnotation({
     if (ann.type !== 'text' || editing) return;
     const el = blockRef.current;
     if (!el) return;
-    const need = (el.scrollHeight + 2) / scale;
+    // The block carries HIT_SLACK of padding so clicking its words needs no
+    // precision. That slack is a fixed number of screen pixels and has nothing
+    // to do with the text, so it comes off before the height is stored: leave
+    // it in and the box stops being a constant multiple of its type, which is
+    // what stopped a corner drag holding the box's proportions.
+    const need = (el.scrollHeight - 2 * HIT_SLACK) / scale;
     // A threshold, or rounding at one zoom level would set the height back and
     // forth for ever.
     if (Math.abs(need - ann.data.h) > 0.5) {
@@ -1695,7 +1710,9 @@ function HtmlAnnotation({
    * height is the content's to decide.
    */
   function fittedTo(data: any, needPx: number) {
-    const nh = Math.max(MIN_TEXT_H, (needPx + 2) / scale);
+    // No slack added here either, so the height a box has while you are typing
+    // in it is the height it keeps when you leave.
+    const nh = Math.max(MIN_TEXT_H, needPx / scale);
     if (Math.abs(nh - data.h) < 0.5) return data;
     // y is the bottom edge, so changing the height keeps the top where it is.
     return { ...data, h: nh, y: data.y + data.h - nh };

@@ -190,6 +190,12 @@ in. Everything after is one commit per change.
   handles set the width, the corner handles scale the type, and the height is
   measured from the rendered block and followed. Dragging a height by hand left
   text either hanging out of the bottom or floating in empty space.
+  The measurement takes `HIT_SLACK` off, because that padding is a fixed number
+  of screen pixels for the click target and has nothing to do with the text.
+  Leaving it in stopped the height being a constant multiple of the type, so a
+  corner drag could not hold the box's proportions: it drifted 8 percent. A
+  corner also scales by the drag itself and keeps the font to a tenth of a
+  point, since whole points are too coarse to keep the shape at small sizes.
 - Editing a text box is a `contenteditable`, not a textarea, so the markdown
   takes effect as you type. Chrome's plaintext-only mode keeps the box in one
   node with newline characters, so there are no line elements to style and this
@@ -205,6 +211,9 @@ in. Everything after is one commit per change.
   - A rebuild always puts the caret somewhere, falling back to the end. Leaving
     it nowhere makes the box silently stop taking input, which reads as a box
     that refuses to be typed in or deleted from.
+  The editor sets `outline: 'none'` itself. Tailwind's `outline-none` only makes
+  the outline transparent, so the global `:focus-visible` rule painted one over
+  it and the box wore two frames at once.
   Markers stay visible while you are in the box, the way a source mode editor
   works, and disappear when you click away. Hiding them while editing means the
   text on screen is no longer the text being edited, and every caret offset has
