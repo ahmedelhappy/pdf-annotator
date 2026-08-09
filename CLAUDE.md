@@ -54,15 +54,11 @@ Deleted page *content* only exists in that snapshot, so a page op that skips
 before hitting the server so no debounced write is in flight during a renumber.
 Any new path that reorganizes pages must do the same.
 
-**4. Ink and markdown parity.** `strokeOutline` is duplicated in
+**4. Ink parity.** `strokeOutline` is duplicated in
 [client/src/lib/ink.ts](client/src/lib/ink.ts) and
-[server/src/lib/ink.js](server/src/lib/ink.js), and the markdown parser in
-[client/src/lib/markdown.ts](client/src/lib/markdown.ts) and
-[server/src/lib/markdown.js](server/src/lib/markdown.js), so neither package
-needs a build step. [ink.test.ts](client/src/test/ink.test.ts) and
-[markdown.test.ts](client/src/test/markdown.test.ts) import both copies and
-assert identical output. Change one, change both. The page and the export have
-to read a box the same way, or what you type and what you print stop matching.
+[server/src/lib/ink.js](server/src/lib/ink.js), so neither package needs a build
+step. [ink.test.ts](client/src/test/ink.test.ts) imports both copies and asserts
+identical output. Change one, change both.
 
 **5. Search haystack.** [search.ts](client/src/lib/search.ts) stitches page text
 twice: `SearchIndex.pageText` joins `getTextContent` items, `hitsInTextLayer`
@@ -186,61 +182,37 @@ in. Everything after is one commit per change.
   the page to render before converting through its viewport. `alt+arrowup` and
   `alt+arrowdown` already move a page, and arrow keys normalise to `arrowup`,
   so `alt+up` would never have fired.
+- A text box holds plain text. Markdown was tried and taken out again: the live
+  editor it needed was a `contenteditable`, and rebuilding its nodes under the
+  caret cost a run of bugs, the last of which was Enter opening two lines at a
+  time on an empty line and the box running away down the page. What was there
+  is in the history at `c5650be` and `97e26fe` if it is ever wanted again.
 - A text box's height is its words'. There is no vertical resize: the side
-  handles set the width, the corner handles scale the type, and the height is
-  measured from the rendered block and followed. Dragging a height by hand left
-  text either hanging out of the bottom or floating in empty space.
-  It measures whichever of the two is on screen, the rendered block or the
-  editor, so a box resized mid-sentence still follows its words: with the effect
-  bailing out while editing, a side drag left the text hanging out of the
-  bottom. The measurement takes `HIT_SLACK` off, because that padding is a fixed number
-  of screen pixels for the click target and has nothing to do with the text.
-  Leaving it in stopped the height being a constant multiple of the type, so a
-  corner drag could not hold the box's proportions: it drifted 8 percent. A
-  corner also scales by the drag itself and keeps the font to a tenth of a
-  point, since whole points are too coarse to keep the shape at small sizes.
-- Editing a text box is a `contenteditable`, not a textarea, so the markdown
-  takes effect as you type. Chrome's plaintext-only mode keeps the box in one
-  node with newline characters, so there are no line elements to style and this
-  builds them. Three rules keep it stable, and all three were bugs first:
-  - The editor takes its height from its **content**. With `h-full` its
-    `scrollHeight` reported the box's own height straight back, so every
-    keystroke measured the box, added slack and grew it again, two points at a
-    time, for ever.
-  - The nodes are rebuilt **only when the line count changes**, which is Enter,
-    paste and deleting across a break. Ordinary typing only restyles, and only
-    when a line changes what kind of line it is, so the caret is never touched
-    and no keystroke pays for a caret measurement.
-  - A rebuild always puts the caret somewhere, falling back to the end. Leaving
-    it nowhere makes the box silently stop taking input, which reads as a box
-    that refuses to be typed in or deleted from.
-  Each line carries its own font size, so a size set from outside, by a corner
-  drag or the toolbar, has to be written back onto the lines: the container
-  alone changing left the text at whatever size it was built at.
+  handles set the width, the corner handles scale the type, and the height
+  follows the text. Dragging a height by hand left text either hanging out of
+  the bottom or floating in empty space. A corner scales by the drag itself and
+  keeps the font to a tenth of a point, since whole points are too coarse to
+  hold the box's shape at small sizes.
+- That height is measured through `textHeight`, never off whatever is on screen,
+  and the same way whether the box is being typed in or not:
+  - A textarea fills its box, so asking it how tall its content is hands the
+    box's own height straight back. Every keystroke measured the box, added
+    slack and grew it again, two points at a time, for ever.
+  - The drawn block and the editor disagree about the empty line a trailing
+    newline opens: a block drops it, a textarea keeps it, because the caret can
+    sit there. So the ruler measures a zero-width `TAIL` after the text and
+    counts that line. Without it the frame stayed one line behind the caret on
+    every Enter, and the box lost a line on the way out.
+  - The block's `max-width` is `100% + 2 * HIT_SLACK`, so its padding is slack
+    rather than text and the words wrap where the textarea wraps them. At a
+    plain `100%` a box that fitted while you were typing gained a line the
+    moment you left it.
   The editor sets `outline: 'none'` itself. Tailwind's `outline-none` only makes
   the outline transparent, so the global `:focus-visible` rule painted one over
   it and the box wore two frames at once.
-  Markers stay visible while you are in the box, the way a source mode editor
-  works, and disappear when you click away. Hiding them while editing means the
-  text on screen is no longer the text being edited, and every caret offset has
-  to be mapped through the hidden characters. Inline emphasis settles on deselect
-  for the same reason: re-cutting spans under the caret is what moves it.
 - Anything that must sit above the page uses z-index 4000. The selection frame
   is 1000 and its menu 3000, so Tailwind's `z-50` was not enough and a selection
   drew across the shortcut sheet.
-- A text box reads a small slice of markdown: `#` to `###`, `-`/`*`/`+` bullets,
-  `1.` numbers, `[ ]` and `[x]`, two spaces per nesting level, `*italic*` and
-  `**bold**`. Editing shows the raw text. Underscores are deliberately not
-  emphasis, since `file_name` is far more common than intent. A checkbox is
-  spelled `[ ]` rather than drawn as a ballot box: Helvetica is WinAnsi only and
-  an unencodable marker took the whole box down at export. Each marker kind
-  reserves a column of its own width through `MARKER_WIDTH`.
-- The export wraps markdown runs itself in `wrapRuns` rather than using pdf-lib's
-  `maxWidth`, which cannot follow a face that changes mid-line. `coalesce` joins
-  neighbouring pieces in the same face back together: drawing word by word put
-  every word in the file as its own text item and copying out of the export came
-  apart. Non-Latin text still falls back to the embedded face with the markup
-  flattened.
 - `TEXT_FONT` and `TEXT_LEADING` live in [text.ts](client/src/lib/text.ts) with
   `textHeight`, which measures wrapped height through one reused offscreen
   element. A pasted paragraph is one long line that wraps into many, so counting
@@ -334,7 +306,7 @@ in. Everything after is one commit per change.
 - An empty text box is removed when it is **deselected**, not on blur. Blur
   alone fires when you reach for a resize handle, which deleted it mid-resize.
 - A text box renders a `<textarea>` only while editing; otherwise it is a block
-  that hugs its own words. Tests that locate one must not look for a textarea.
+  that hugs its own words. Anything looking for one has to allow for both.
 - Picking something up needs the content; once picked, its whole box answers.
   Unselected, a text box passes pointers through and only the words respond, so
   blank space around one word cannot move it by accident. Selected, the wrapper

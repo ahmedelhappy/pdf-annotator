@@ -10,11 +10,7 @@ import {
   type Guide,
 } from '../lib/geometry';
 import { normalizePressure, simplify, strokeOutline } from '../lib/ink';
-import { TEXT_FONT, TEXT_LEADING } from '../lib/text';
-import {
-  blockSize, blockText, HEADING_GAP, indentFor, markerFor, markerWidth,
-  parseMarkdown, type Block, type Run,
-} from '../lib/markdown';
+import { TEXT_FONT, TEXT_LEADING, textHeight } from '../lib/text';
 import { pageViewports } from '../pdf';
 import type { Annotation, AnnType, Box, InkPt, Pt, Rect } from '../types';
 
@@ -36,8 +32,6 @@ const MIN_TEXT_H = 8;
 const HIT_SLACK = 4;
 /** How far a press may wander and still count as a click, not a drag. */
 const CLICK_SLOP = 4;
-/** Holds an empty markdown line open, so a blank line still takes a line. */
-const ZERO_WIDTH = '​';
 
 
 type Props = {
@@ -1302,277 +1296,6 @@ function LayerMenu({
 }
 
 /**
- * A text box shown rather than edited. Editing shows the raw markdown in the
- * textarea, which is the point: what you typed is what you can change. This is
- * the same parse the export reads, so a heading is the same size on paper.
- *
- * A list item is a row with its marker in a fixed column, so a line that wraps
- * lines up under the words rather than under the bullet.
- */
-function Markdown({ text, size }: { text: string; size: number }) {
-  const blocks = useMemo(() => parseMarkdown(text), [text]);
-  return (
-    <>
-      {blocks.map((b: Block, i: number) => {
-        const fs = blockSize(b, size);
-        const marker = markerFor(b);
-        const heading = b.kind === 'h1' || b.kind === 'h2' || b.kind === 'h3';
-        const common = {
-          fontSize: fs,
-          lineHeight: TEXT_LEADING,
-          fontWeight: heading ? 700 : undefined,
-          // Headings get a little air above, except the first line, where it
-          // would just push the words off the top of the box.
-          marginTop: heading && i > 0 ? fs * HEADING_GAP : undefined,
-        };
-
-        if (!marker) {
-          return (
-            <div key={i} className="whitespace-pre-wrap break-words" style={common}>
-              {/* An empty line still takes a line. */}
-              {b.runs.map((r, k) => <Emphasis key={k} run={r} />)}
-              {!blockText(b) && ZERO_WIDTH}
-            </div>
-          );
-        }
-        return (
-          <div key={i} className="flex break-words" style={common}>
-            <span
-              style={{
-                width: markerWidth(b, size),
-                marginLeft: indentFor(b, size) - markerWidth(b, size),
-                flex: 'none',
-              }}
-            >
-              {marker}
-            </span>
-            <span className="whitespace-pre-wrap min-w-0">
-              {b.runs.map((r, k) => <Emphasis key={k} run={r} />)}
-            </span>
-          </div>
-        );
-      })}
-    </>
-  );
-}
-
-/** Characters before the caret, counting each line break as one. */
-function caretOffset(root: HTMLElement): number {
-  const sel = window.getSelection();
-  if (!sel?.focusNode || !root.contains(sel.focusNode)) return -1;
-  const r = document.createRange();
-  r.setStart(root, 0);
-  try {
-    r.setEnd(sel.focusNode, sel.focusOffset);
-  } catch {
-    return -1;
-  }
-  // Measured through a clone rather than counted by hand, so a line break counts
-  // the same way innerText counts it whatever shape the DOM is in. Off screen,
-  // so nothing flashes.
-  const probe = document.createElement('div');
-  probe.style.cssText = 'position:fixed;left:-9999px;top:0;white-space:pre-wrap';
-  probe.appendChild(r.cloneContents());
-  document.body.appendChild(probe);
-  const n = probe.innerText.length;
-  probe.remove();
-  return n;
-}
-
-/** Puts the caret back at a character offset, in a one-line-per-child editor. */
-function placeCaret(root: HTMLElement, at: number) {
-  const sel = window.getSelection();
-  if (!sel) return;
-  const put = (node: Node, offset: number) => {
-    const r = document.createRange();
-    r.setStart(node, offset);
-    r.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r);
-  };
-
-  let seen = 0;
-  for (const line of Array.from(root.children) as HTMLElement[]) {
-    const len = (line.textContent || '').length;
-    if (at <= seen + len) {
-      const t = line.firstChild;
-      if (t && t.nodeType === Node.TEXT_NODE) put(t, Math.min(at - seen, (t as Text).length));
-      else put(line, 0);
-      return;
-    }
-    // The newline that ends this line.
-    seen += len + 1;
-  }
-  // Past the end, which happens when the last line was just deleted.
-  const last = root.lastElementChild;
-  if (last) put(last, last.childNodes.length ? 1 : 0);
-}
-
-/** The editor's text, with the browser's line breaks turned back into newlines. */
-function readRaw(el: HTMLElement): string {
-  return el.innerText.replace(/\r\n/g, '\n').replace(/\n$/, '');
-}
-
-/** What kind each line is, as one string, for telling a shape change apart. */
-function shapeOf(text: string): string {
-  return parseMarkdown(text).map((b) => `${b.kind}${b.depth}`).join('|');
-}
-
-/** One element per line, so a line is something that can be styled. */
-function fillLines(el: HTMLElement, text: string, size: number) {
-  el.replaceChildren(
-    ...text.split('\n').map((line) => {
-      const div = document.createElement('div');
-      // An empty line needs something in it to have a height of its own.
-      if (line) div.textContent = line;
-      else div.appendChild(document.createElement('br'));
-      return div;
-    })
-  );
-  restyleLines(el, text, size);
-}
-
-/** Writes each line's markdown shape onto the element holding that line. */
-function restyleLines(el: HTMLElement, text: string, size: number) {
-  const kids = Array.from(el.children) as HTMLElement[];
-  const blocks = parseMarkdown(text);
-  for (let i = 0; i < Math.min(kids.length, blocks.length); i++) {
-    const b = blocks[i];
-    const heading = b.kind === 'h1' || b.kind === 'h2' || b.kind === 'h3';
-    kids[i].style.fontSize = `${blockSize(b, size)}px`;
-    kids[i].style.fontWeight = heading ? '700' : '';
-    kids[i].style.paddingLeft = `${indentFor(b, size)}px`;
-    kids[i].style.marginTop = heading && i > 0 ? `${blockSize(b, size) * HEADING_GAP}px` : '';
-  }
-}
-
-/**
- * The editor for a text box. The markdown takes effect as you type: a line
- * becomes a heading the moment you put a hash in front of it, and a bullet
- * indents itself the moment you type the dash.
- *
- * It is a `contenteditable`. Chrome's plaintext-only mode keeps everything in
- * one node with newline characters in it, so there are no per-line elements to
- * style and this rebuilds them on each keystroke, then puts the caret back by
- * character offset. Rebuilding is what would normally move a caret, but the
- * model here is flat enough that the offset is exact: one child per line, one
- * text node per child.
- *
- * Rebuilding is skipped while an input method is composing, since replacing the
- * nodes underneath a composition abandons it halfway.
- *
- * Inline emphasis is left to settle when you finish. Splitting a line into bold
- * and italic spans as you type would put the caret inside a run that is about to
- * be re-cut. Block shape is where nearly all the visible change is anyway.
- */
-function MarkdownInput({
-  inputRef, text, size, color, onText, onBlur,
-}: {
-  inputRef: React.RefObject<any>;
-  text: string;
-  size: number;
-  color: string;
-  onText: (next: string, needPx: number) => void;
-  onBlur: () => void;
-}) {
-  const first = useRef(text);
-  const composing = useRef(false);
-  /** The kinds of line last styled, so a keystroke that changes nothing does nothing. */
-  const shape = useRef('');
-
-  useEffect(() => {
-    const el = inputRef.current as HTMLElement | null;
-    if (!el) return;
-    fillLines(el, first.current, size);
-    shape.current = shapeOf(first.current);
-    // Starting content only. Every keystroke after this is handled below.
-  }, []);
-
-  /**
-   * Each line carries its own font size, so a size set from outside, by dragging
-   * a corner or by the toolbar, has to be written onto the lines. The container
-   * alone changing left the text at whatever size it was built at.
-   */
-  useEffect(() => {
-    const el = inputRef.current as HTMLElement | null;
-    if (!el) return;
-    restyleLines(el, readRaw(el), size);
-  }, [size]);
-
-  function onInput(el: HTMLElement) {
-    const raw = el.innerText.replace(/\r\n/g, '\n').replace(/\n$/, '');
-    const lines = raw.split('\n').length;
-    const next = shapeOf(raw);
-
-    if (!composing.current && el.children.length !== lines) {
-      // The browser's own structure has drifted from one element per line,
-      // which happens on Enter, on paste, and on deleting across a line break.
-      // This is the only time the nodes are rebuilt, so it is the only time the
-      // caret has to be put back, and ordinary typing never pays for it.
-      const at = caretOffset(el);
-      fillLines(el, raw, size);
-      // Falling back to the end rather than leaving the caret nowhere. A lost
-      // caret makes the box stop taking input at all, which reads as a box that
-      // refuses to be typed in or deleted from.
-      placeCaret(el, at < 0 ? raw.length : at);
-    } else if (next !== shape.current) {
-      // A line changed what kind of line it is. Styling touches no nodes, so
-      // the caret is not involved.
-      restyleLines(el, raw, size);
-    }
-    shape.current = next;
-    onText(raw, el.scrollHeight);
-  }
-
-  return (
-    <div
-      ref={inputRef}
-      contentEditable="plaintext-only"
-      suppressContentEditableWarning
-      role="textbox"
-      aria-multiline="true"
-      // Height comes from the content, never from the box. With h-full the
-      // element reported the box's own height back as its scrollHeight, so
-      // every keystroke measured the box, added slack, and grew it again.
-      className="w-full bg-transparent outline-none whitespace-pre-wrap break-words"
-      style={{
-        color,
-        fontSize: size,
-        fontFamily: TEXT_FONT,
-        lineHeight: TEXT_LEADING,
-        pointerEvents: 'auto',
-        // No focus ring. Tailwind's outline-none only makes the outline
-        // transparent, so the global focus-visible rule painted one anyway and
-        // the box wore two frames at once: this and the selection frame, which
-        // is already showing you what has focus.
-        outline: 'none',
-      }}
-      onPointerDown={(e) => e.stopPropagation()}
-      onInput={(e) => onInput(e.currentTarget)}
-      onCompositionStart={() => {
-        composing.current = true;
-      }}
-      onCompositionEnd={(e) => {
-        composing.current = false;
-        onInput(e.currentTarget);
-      }}
-      onBlur={onBlur}
-    />
-  );
-}
-
-const Emphasis = ({ run }: { run: Run }) => (
-  <span
-    style={{
-      fontWeight: run.bold ? 700 : undefined,
-      fontStyle: run.italic ? 'italic' : undefined,
-    }}
-  >
-    {run.text}
-  </span>
-);
-
-/**
  * Floats an annotation's page above its neighbours for the length of a drag,
  * so something dragged past the page edge is not covered by the next page.
  * The annotation's own stacking is handled by React through `z`.
@@ -1620,29 +1343,28 @@ function HtmlAnnotation({
    * decides the line count and only the browser knows where a line breaks.
    * y is the bottom edge, so it moves to keep the top of the box still.
    */
-  const blockRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (ann.type !== 'text') return;
-    // Whichever is on screen. While you are typing the words live in the
-    // editor, so that is what gets measured: without this a box resized
-    // mid-sentence kept its old height and the text hung out of the bottom.
-    const el = editing ? inputRef.current : blockRef.current;
-    if (!el) return;
-    // The block carries HIT_SLACK of padding so clicking its words needs no
-    // precision. That slack is a fixed number of screen pixels and has nothing
-    // to do with the text, so it comes off before the height is stored: leave
-    // it in and the box stops being a constant multiple of its type, which is
-    // what stopped a corner drag holding the box's proportions. The editor has
-    // no such padding.
-    const need = (el.scrollHeight - (editing ? 0 : 2 * HIT_SLACK)) / scale;
+    // Measured off the ruler in text.ts rather than off whatever is on screen.
+    // A textarea fills its box, so asking it how tall its content is hands the
+    // box's own height straight back, and the box grew a little on every
+    // keystroke, for ever. The drawn block could be measured, but it and the
+    // editor disagree about the empty line a trailing newline opens, so the box
+    // lost a line on the way out of it. One ruler for both states means the
+    // height a box has while you are typing is the height it keeps.
+    const need = textHeight(
+      ann.data.text || '',
+      ann.data.w * scale,
+      (ann.style?.fontSize ?? 14) * scale
+    ) / scale;
+    const h = Math.max(MIN_TEXT_H, need);
     // A threshold, or rounding at one zoom level would set the height back and
     // forth for ever.
-    if (Math.abs(need - ann.data.h) > 0.5) {
-      onChange({ ...ann.data, h: need, y: ann.data.y + ann.data.h - need });
+    if (Math.abs(h - ann.data.h) > 0.5) {
+      onChange({ ...ann.data, h, y: ann.data.y + ann.data.h - h });
     }
-  }, [ann.data.text, ann.data.w, ann.data.h, ann.style?.fontSize, editing, scale]);
+  }, [ann.data.text, ann.data.w, ann.data.h, ann.style?.fontSize, scale]);
 
-  // A text box's editor is a contenteditable; a note's is a plain textarea.
   const inputRef = useRef<any>(null);
   useEffect(() => {
     if (editing) {
@@ -1651,14 +1373,6 @@ function HtmlAnnotation({
       // Focus lands the caret at the very start, which is the wrong end when
       // you have just double clicked into a box to add to it.
       if (el?.setSelectionRange) el.setSelectionRange(el.value.length, el.value.length);
-      else if (el?.isContentEditable && el.childNodes.length) {
-        const r = document.createRange();
-        r.selectNodeContents(el);
-        r.collapse(false);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(r);
-      }
     }
     // Clearing `editing` is not enough on its own: the textarea keeps DOM
     // focus, so the caret stays visible and blur, which is what removes an
@@ -1724,15 +1438,19 @@ function HtmlAnnotation({
   }
 
   /**
-   * Fits a text box to what is in it while you type. Width is left alone: text
-   * wraps at whatever width you set, and only the height follows, so a long line
+   * Fits a text box to what is in it as you type. Width is left alone: text
+   * wraps at whatever width you set and only the height follows, so a long line
    * never pushes the box off the page. It shrinks as well as grows, because the
    * height is the content's to decide.
+   *
+   * Measured through the ruler rather than off the textarea, for the reason the
+   * height effect above gives. Done here as well as there so the box grows in
+   * the same commit as the keystroke: waiting for the effect left the last line
+   * clipped for a frame.
    */
-  function fittedTo(data: any, needPx: number) {
-    // No slack added here either, so the height a box has while you are typing
-    // in it is the height it keeps when you leave.
-    const nh = Math.max(MIN_TEXT_H, needPx / scale);
+  function fittedTo(data: any, text: string) {
+    const px = textHeight(text, data.w * scale, (ann.style?.fontSize ?? 14) * scale);
+    const nh = Math.max(MIN_TEXT_H, px / scale);
     if (Math.abs(nh - data.h) < 0.5) return data;
     // y is the bottom edge, so changing the height keeps the top where it is.
     return { ...data, h: nh, y: data.y + data.h - nh };
@@ -1914,10 +1632,14 @@ function HtmlAnnotation({
         // the words are clickable. The padding gives a few pixels of slack so
         // you do not have to land exactly on a glyph.
         <div
-          ref={blockRef}
-          className="max-w-full select-none"
+          className="whitespace-pre-wrap break-words select-none"
           style={{
             width: 'fit-content',
+            // The padding is slack, not text, so the words are allowed the
+            // whole width of the box and wrap where the textarea wraps them.
+            // At a plain 100% they wrapped 8px early and a box that fitted
+            // while you were typing gained a line the moment you left it.
+            maxWidth: `calc(100% + ${2 * HIT_SLACK}px)`,
             color: ann.style.color,
             fontSize: ann.style.fontSize * scale,
             fontFamily: TEXT_FONT,
@@ -1928,17 +1650,28 @@ function HtmlAnnotation({
             cursor: ann.locked ? 'default' : 'move',
           }}
         >
-          <Markdown text={ann.data.text || ''} size={ann.style.fontSize * scale} />
+          {ann.data.text || ''}
         </div>
       ) : (
-        <MarkdownInput
-          inputRef={inputRef}
-          text={ann.data.text || ''}
-          size={ann.style.fontSize * scale}
-          color={ann.style.color}
-          onText={(next: string, needH: number) =>
-            onChange(fittedTo({ ...ann.data, text: next }, needH))
-          }
+        <textarea
+          ref={inputRef}
+          defaultValue={ann.data.text}
+          className="w-full h-full bg-transparent resize-none overflow-hidden"
+          style={{
+            color: ann.style.color,
+            fontSize: ann.style.fontSize * scale,
+            fontFamily: TEXT_FONT,
+            lineHeight: TEXT_LEADING,
+            pointerEvents: 'auto',
+            // No focus ring. Tailwind's outline-none only makes the outline
+            // transparent, so the global focus-visible rule painted one anyway
+            // and the box wore two frames at once: this and the selection
+            // frame, which is already showing you what has focus.
+            outline: 'none',
+          }}
+          placeholder="Type here"
+          onPointerDown={(e) => e.stopPropagation()}
+          onChange={(e) => onChange(fittedTo({ ...ann.data, text: e.target.value }, e.target.value))}
           // An empty box has nothing to show and nothing to click, so it goes
           // once you leave it alone. Deleting on change would remove it the
           // moment you cleared it to retype, and deleting on blur alone would
