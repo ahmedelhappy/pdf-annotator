@@ -332,9 +332,15 @@ in. Everything after is one commit per change.
 - The marks panel has two filters, both off by default so it opens as the plain
   list it has always been. "By page" gives one row per page rather than one per
   mark; "Difficult" narrows to pages carrying a flag. `stepAnnotation` reads
-  `marksHardOnly` too, or the arrows would walk past what the list is showing.
+  both, or the arrows would disagree with the list they sit above:
+  `marksHardOnly` narrows what they walk, and under `marksByPage` they walk
+  **pages** rather than the marks on them, dropping the selection as they go.
+  Stepping through every mark while the list showed one row per page took
+  several presses to leave a busy page and never moved the highlighted row.
   The panel follows the reader and the selection through one effect keyed on
   both, scrolling `nearest` and instantly, for the reason the page sidebar does.
+  By page it follows the page only: there are no mark rows to aim at, and
+  looking for the selected one found nothing and simply stopped keeping up.
 - A document can be renamed from its card in the library or from the name at
   the top left of the toolbar. Only `originalName` changes; the file on disk
   keeps its stored `filename`, which is a UUID and never meant anything.
@@ -343,10 +349,24 @@ in. Everything after is one commit per change.
   PDF to open first. The page size matches what the "+ Add page" strip inserts.
 - `fileRev` on a document counts rewrites of the file, which is what a page op
   and a page undo both do. `thumbnailRev` records which revision the library
-  card's picture was drawn from, and the library redraws any card where the two
-  disagree. Without it a reorganized document went on showing the page it was
-  added with. Drawn in the library because that is where pdf.js already runs;
-  the server has no canvas.
+  card's picture was drawn from. Without them a reorganized document went on
+  showing the page it was added with.
+  - `thumbnailRev` defaults to **-1**, not 0. Every document that predates the
+    counters reads as -1 and so is stale by definition, which is right: nothing
+    was tracking their rewrites. A default of 0 made them indistinguishable
+    from a card drawn a moment ago, and a page deleted before any of this
+    existed stayed on its card for ever.
+  - `drawThumbnail` in [pdf.ts](client/src/pdf.ts) does the drawing, and the
+    Viewer calls it whenever it loads the file, which is exactly when a rewrite
+    has happened and the file is already open. The library only catches up
+    documents that are behind for some other reason.
+  - Its record of what has been drawn is a module-level `Set`, not a ref, and
+    the write is never abandoned on unmount. React mounts an effect twice in
+    development and throws the first run away: with the guard in a ref, the
+    second run skipped work the first had claimed and then discarded, and the
+    card kept its old picture.
+  - Drawn on the client at all because running pdf.js in Node needs the native
+    canvas package, which is a rough install on Windows.
 - Annotation types: ink, highlight, text, note, image, flag. Ink stores `points`
   (optional pressure `p`), note stores `x, y` plus a fixed `NOTE_SIZE`, the
   rest store `x, y, w, h`. Box types may also carry `rotation`, in degrees

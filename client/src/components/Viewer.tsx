@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { loadPdf, pageViewports } from '../pdf';
+import { drawThumbnail, loadPdf, pageViewports } from '../pdf';
 import { toPdf, toView } from '../lib/geometry';
 import { textHeight } from '../lib/text';
 
@@ -207,6 +207,19 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
         // out of the rewrite, not on the ones about to be replaced.
         pointOut(flashOnReload.current);
         flashOnReload.current = null;
+
+        /*
+         * The library card's picture is of page one, and a page op rewrites the
+         * file, so it has to be drawn again. Done here because this is the one
+         * place the new file is already open: the library would otherwise be
+         * fetching and parsing it a second time to find out what changed.
+         *
+         * Deliberately not awaited and not guarded by `dead`. Leaving the
+         * document is the most likely moment for this to be running, and the
+         * picture is just as wrong then. `drawThumbnail` keeps its own record of
+         * what it has drawn, so a second pass over the same revision is free.
+         */
+        void drawThumbnail(docId, doc, m.fileRev ?? 0, api.setThumbnail, api.uploadAsset);
       } catch (e: any) {
         if (!dead) setLoadError(e.message);
       }
@@ -330,6 +343,28 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
         );
         return;
       }
+
+      /*
+       * By page, the arrows walk pages, not the marks on them. Stepping through
+       * every mark while the list shows one row per page meant several presses
+       * to leave a busy page, and the row you were on never changed.
+       *
+       * The selection is dropped rather than moved: no single mark is being
+       * pointed at, and a stale one left the panel following it instead of the
+       * page underneath.
+       */
+      if (st.marksByPage) {
+        const pages = [...new Set(list.map((x) => x.pageIndex))].sort((x, y) => x - y);
+        const on = pages.indexOf(current);
+        const next =
+          on >= 0 ? pages[(on + dir + pages.length) % pages.length]
+          : dir === 1 ? (pages.find((n) => n > current) ?? pages[0])
+          : ([...pages].reverse().find((n) => n < current) ?? pages[pages.length - 1]);
+        st.select(null);
+        goTo(next);
+        return;
+      }
+
       const at = list.findIndex((x) => x._id === st.selectedIds[0]);
       const next =
         at >= 0 ? list[(at + dir + list.length) % list.length]
@@ -337,7 +372,7 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
         : ([...list].reverse().find((x) => x.pageIndex <= current) ?? list[list.length - 1]);
       revealAnn(next);
     },
-    [current, revealAnn, setError]
+    [current, goTo, revealAnn, setError]
   );
 
   const runPageOp = useCallback(

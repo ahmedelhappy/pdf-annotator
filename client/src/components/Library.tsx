@@ -1,38 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
-import { loadPdf } from '../pdf';
+import { drawThumbnail } from '../pdf';
 import type { DocMeta } from '../types';
 
-/**
- * Thumbnails are rendered here rather than on the server, because running
- * pdf.js in Node needs the native canvas package, which is a rough install on
- * Windows. A failure is non-fatal, the card just shows a placeholder.
- */
-async function makeThumbnail(docId: string, from: Blob | string, fileRev = 0) {
-  let url: string | null = null;
-  try {
-    // Either the file just uploaded, which is already to hand, or the copy on
-    // the server, which is the only way to see a document that has since been
-    // rewritten by a page op.
-    url = typeof from === 'string' ? null : URL.createObjectURL(from);
-    const pdf = await loadPdf(url ?? (from as string));
-    const page = await pdf.getPage(1);
-    const base = page.getViewport({ scale: 1 });
-    const vp = page.getViewport({ scale: 240 / base.width });
-    const canvas = document.createElement('canvas');
-    canvas.width = vp.width;
-    canvas.height = vp.height;
-    await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise;
-    const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), 'image/png'));
-    const { assetId } = await api.uploadAsset(blob, 'thumb.png');
-    return await api.setThumbnail(docId, assetId, fileRev);
-  } catch (e) {
-    console.warn('[thumbnail] skipped', e);
-  } finally {
-    if (url) URL.revokeObjectURL(url);
-  }
-  return null;
-}
+/** The shared drawer, wired to this app's API. */
+const makeThumbnail = (docId: string, from: any, fileRev = 0) =>
+  drawThumbnail(docId, from, fileRev, api.setThumbnail, api.uploadAsset);
 
 export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   const [docs, setDocs] = useState<DocMeta[]>([]);
@@ -43,8 +16,6 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
   const [dragOver, setDragOver] = useState(false);
   /** Which card is being renamed, and what has been typed into it. */
   const [naming, setNaming] = useState<{ id: string; text: string } | null>(null);
-  /** Thumbnails already attempted this session, so a failure is not retried for ever. */
-  const drawn = useRef(new Set<string>());
 
   const refresh = () =>
     Promise.all([api.listDocs(), api.listDocs(true)])
@@ -66,22 +37,27 @@ export default function Library({ onOpen }: { onOpen: (id: string) => void }) {
    */
   useEffect(() => {
     const stale = docs.filter(
-      (d) => (d.thumbnailRev ?? 0) !== (d.fileRev ?? 0) || !d.thumbnailAssetId
+      (d) => (d.thumbnailRev ?? -1) !== (d.fileRev ?? 0) || !d.thumbnailAssetId
     );
     if (!stale.length) return;
     let dead = false;
     (async () => {
-      let any = false;
+      const drew: DocMeta[] = [];
       for (const d of stale) {
-        const key = `${d._id}:${d.fileRev ?? 0}`;
-        if (dead || drawn.current.has(key)) continue;
-        drawn.current.add(key);
         // Cache busted, or the browser hands back the file as it was before
         // the rewrite and the new picture shows the old pages.
         const at = `${api.fileUrl(d._id)}?v=${d.fileRev ?? 0}`;
-        if (await makeThumbnail(d._id, at, d.fileRev ?? 0)) any = true;
+        // Never abandoned halfway on unmount: the work is already claimed
+        // module side, so dropping it here would leave the card stale with
+        // nothing left to try again.
+        const done = await makeThumbnail(d._id, at, d.fileRev ?? 0);
+        if (done) drew.push(done);
       }
-      if (any && !dead) refresh();
+      // Swapped in rather than refetched, so a card that has just been renamed
+      // or opened does not flicker back to what the server last said.
+      if (drew.length && !dead)
+        setDocs((list) =>
+          list.map((d) => drew.find((n) => n._id === d._id) ?? d));
     })();
     return () => {
       dead = true;

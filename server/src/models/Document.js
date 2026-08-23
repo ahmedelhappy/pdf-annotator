@@ -10,7 +10,13 @@ const schema = new mongoose.Schema(
     // rewrites the file and bumps fileRev, so the library can see that a card's
     // picture is of a document that no longer looks like that and redraw it.
     fileRev: { type: Number, default: 0 },
-    thumbnailRev: { type: Number, default: 0 },
+    // -1 means no picture has been drawn under this scheme yet, which is also
+    // what every document that predates it reads as. That is deliberate: they
+    // are stale by definition, since nothing was tracking their rewrites, so
+    // they get redrawn once and are correct from then on. A default of 0 would
+    // have made them indistinguishable from a document drawn a moment ago, and
+    // a page deleted before this existed stayed on its card for ever.
+    thumbnailRev: { type: Number, default: -1 },
     // A document with no PDF behind it to begin with: a blank page to draw on.
     // Kept only so the library can say what a card is.
     blank: { type: Boolean, default: false },

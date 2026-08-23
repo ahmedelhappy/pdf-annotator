@@ -79,9 +79,13 @@ export default function AnnotationList({
    * that restarts on every page turn never catches up.
    */
   useEffect(() => {
-    const pick = selectedIds[0]
-      ? `[data-mark="${selectedIds[0]}"]`
-      : `[data-mark-page="${current}"]`;
+    // By page there are no mark rows to aim at, only page rows, so the page
+    // being read is the only thing to follow. Looking for the selected mark
+    // there found nothing and the panel simply stopped keeping up.
+    const pick =
+      byPageOnly || !selectedIds[0]
+        ? `[data-mark-page="${current}"]`
+        : `[data-mark="${selectedIds[0]}"]`;
     const row = listRef.current?.querySelector(pick) as HTMLElement | null;
     row?.scrollIntoView({ block: 'nearest' });
   }, [current, selectedIds, byPageOnly, hardOnly]);
@@ -102,10 +106,12 @@ export default function AnnotationList({
               same thing Ctrl+Alt+N and Ctrl+Alt+P do. */}
           <span className="flex gap-1">
             <button className={step} disabled={!annotations.length}
-              title="Previous annotation (Ctrl+Alt+P)" aria-label="Previous annotation"
+              title={byPageOnly ? 'Previous page with marks' : 'Previous annotation (Ctrl+Alt+P)'}
+              aria-label={byPageOnly ? 'Previous page with marks' : 'Previous annotation'}
               onClick={() => onStep(-1)}>↑</button>
             <button className={step} disabled={!annotations.length}
-              title="Next annotation (Ctrl+Alt+N)" aria-label="Next annotation"
+              title={byPageOnly ? 'Next page with marks' : 'Next annotation (Ctrl+Alt+N)'}
+              aria-label={byPageOnly ? 'Next page with marks' : 'Next annotation'}
               onClick={() => onStep(1)}>↓</button>
           </span>
         </div>

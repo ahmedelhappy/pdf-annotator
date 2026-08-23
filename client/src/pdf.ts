@@ -20,6 +20,62 @@ export function loadPdf(url: string) {
   return pdfjsLib.getDocument({ url, enableXfa: false }).promise;
 }
 
+/**
+ * Which revisions are being drawn or have been drawn already, module level and
+ * not tied to any component. React mounts an effect twice in development and
+ * throws the first run away, so a guard living in a ref made the second run
+ * skip the work the first one had claimed and then discarded, and a card kept
+ * its old picture. Nothing here belongs to a render.
+ */
+const thumbing = new Set<string>();
+
+/**
+ * Draws a document's first page and stores it as that document's picture, from
+ * an already-loaded PDF, a file, or a URL to fetch one from.
+ *
+ * Rendered on the client because running pdf.js in Node needs the native canvas
+ * package, which is a rough install on Windows. A failure is not fatal: the
+ * card falls back to a placeholder.
+ */
+export async function drawThumbnail(
+  docId: string,
+  from: any,
+  fileRev = 0,
+  setThumbnail: (id: string, assetId: string, rev: number) => Promise<any>,
+  uploadAsset: (blob: Blob, name?: string) => Promise<{ assetId: string }>
+) {
+  const key = `${docId}:${fileRev}`;
+  if (thumbing.has(key)) return null;
+  thumbing.add(key);
+  let url: string | null = null;
+  try {
+    let pdf = from;
+    if (typeof from === 'string') pdf = await loadPdf(from);
+    else if (from instanceof Blob) {
+      url = URL.createObjectURL(from);
+      pdf = await loadPdf(url);
+    }
+    const page = await pdf.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: 240 / base.width });
+    const canvas = document.createElement('canvas');
+    canvas.width = vp.width;
+    canvas.height = vp.height;
+    await page.render({ canvasContext: canvas.getContext('2d')!, viewport: vp }).promise;
+    const blob: Blob = await new Promise((r) => canvas.toBlob((b) => r(b!), 'image/png'));
+    const { assetId } = await uploadAsset(blob, 'thumb.png');
+    return await setThumbnail(docId, assetId, fileRev);
+  } catch (e) {
+    // Let it be tried again: a failure here is usually the file still being
+    // written, not a document that can never be drawn.
+    thumbing.delete(key);
+    console.warn('[thumbnail] skipped', e);
+    return null;
+  } finally {
+    if (url) URL.revokeObjectURL(url);
+  }
+}
+
 export async function buildTextLayer(page: any, container: HTMLElement, viewport: any) {
   container.replaceChildren();
   const lib: any = pdfjsLib;
