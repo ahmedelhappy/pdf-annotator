@@ -150,6 +150,7 @@ export const BINDINGS: Binding[] = [
   { combo: 't', group: 'Tools', label: 'Add a text box', run: (c) => c.setTool('text') },
   { combo: 'n', group: 'Tools', label: 'Add a sticky note', run: (c) => c.setTool('note') },
   { combo: 'i', group: 'Tools', label: 'Place an image', run: (c) => c.setTool('image') },
+  { combo: 'd', group: 'Tools', label: 'Flag a hard part', run: (c) => c.setTool('flag') },
   { combo: 'space', group: 'Tools', label: 'Hold to pan', run: () => {} },
 
   // Style
@@ -260,7 +261,7 @@ export const bindingId = (b: Binding) => `${b.group}/${b.label}`;
 export const DEFAULT_ON = new Set<string>([
   'Tools/Select', 'Tools/Draw freehand', 'Tools/Erase', 'Tools/Highlight text',
   'Tools/Highlight an area', 'Tools/Add a text box', 'Tools/Add a sticky note',
-  'Tools/Place an image', 'Tools/Hold to pan',
+  'Tools/Place an image', 'Tools/Flag a hard part', 'Tools/Hold to pan',
   'View/Zoom in', 'View/Zoom out', 'View/Zoom to 100%', 'View/Fit width',
   'View/Page thumbnails', 'View/Annotation list',
   'Navigate/Next page', 'Navigate/Previous page', 'Navigate/First page',

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import { PDFDocument } from 'pdf-lib';
 import Doc from '../models/Document.js';
 import Annotation from '../models/Annotation.js';
@@ -53,6 +54,34 @@ r.post('/', uploadPdf.single('file'), async (req, res, next) => {
   }
 });
 
+/**
+ * A document with nothing in it: one white page, ready to be drawn on. This is
+ * a whiteboard as much as it is a PDF reader, and until now there was no way in
+ * without a PDF to open first.
+ *
+ * A4 at 72dpi, the same shape the "+ Add page" strip inserts, so a second page
+ * matches the first.
+ */
+r.post('/blank', async (req, res, next) => {
+  try {
+    const name = String(req.body?.name || '').trim().slice(0, 200) || 'Untitled';
+    const pdf = await PDFDocument.create();
+    pdf.addPage([595.28, 841.89]);
+    const filename = `${crypto.randomUUID()}.pdf`;
+    await fs.writeFile(path.join(PDF_DIR, filename), await pdf.save());
+    res.status(201).json(
+      await Doc.create({
+        originalName: name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`,
+        filename,
+        pageCount: 1,
+        blank: true,
+      })
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+
 r.get('/', async (req, res, next) => {
   try {
     const trashed = req.query.trashed === '1';
@@ -84,9 +113,21 @@ r.patch('/:id', async (req, res, next) => {
     // Only the fields that were actually sent, so setting one does not wipe
     // the other.
     const set = {};
-    if (req.body.thumbnailAssetId) set.thumbnailAssetId = req.body.thumbnailAssetId;
+    if (req.body.thumbnailAssetId) {
+      set.thumbnailAssetId = req.body.thumbnailAssetId;
+      // Stamped with the revision the picture was drawn from, so a later
+      // rewrite of the file can be seen to have left it behind.
+      if (Number.isInteger(req.body.fileRev)) set.thumbnailRev = req.body.fileRev;
+    }
     if (Number.isInteger(req.body.lastPage) && req.body.lastPage >= 0)
       set.lastPage = req.body.lastPage;
+    if (typeof req.body.originalName === 'string') {
+      // A name is what the reader calls the document, not where it lives: the
+      // file on disk keeps the stored filename whatever this says.
+      const name = req.body.originalName.trim().slice(0, 200);
+      if (!name) return res.status(400).json({ error: 'A name cannot be empty.' });
+      set.originalName = name;
+    }
 
     const doc = await Doc.findByIdAndUpdate(req.params.id, set, { new: true });
     if (!doc) return res.status(404).json({ error: 'That document is gone.' });
@@ -208,7 +249,10 @@ r.post('/:id/pages', async (req, res, next) => {
         : Number.isInteger(req.body.index) ? [Number(req.body.index)] : [];
       await ops.snapshot(fileOf(doc), doc, req.body.op, touched);
       const count = await fn(fileOf(doc), doc._id, req.body);
-      await Doc.updateOne({ _id: doc._id }, { $set: { pageCount: count } });
+      await Doc.updateOne(
+        { _id: doc._id },
+        { $set: { pageCount: count }, $inc: { fileRev: 1 } }
+      );
       return count;
     });
     res.json({ pageCount });
@@ -222,6 +266,8 @@ r.post('/:id/pages/undo', async (req, res, next) => {
   try {
     const result = await withDocLock(req.params.id, (doc) => ops.undoPageOp(fileOf(doc), doc));
     if (!result) return res.status(409).json({ error: 'There is no page change left to undo.' });
+    // Putting the old file back is as much a change as the op was.
+    await Doc.updateOne({ _id: req.params.id }, { $inc: { fileRev: 1 } });
     res.json(result);
   } catch (e) {
     next(e);

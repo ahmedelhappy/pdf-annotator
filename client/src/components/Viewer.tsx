@@ -155,6 +155,17 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     if (flashTimer.current) clearTimeout(flashTimer.current);
   }, []);
 
+  const rename = useCallback(
+    async (name: string) => {
+      try {
+        setMeta(await api.renameDoc(docId, name));
+      } catch (e: any) {
+        setError(e.message);
+      }
+    },
+    [docId, setError]
+  );
+
   const setHidden = useCallback(
     async (pages: number[]) => {
       try {
@@ -300,11 +311,23 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
   const stepAnnotation = useCallback(
     (dir: 1 | -1) => {
       const st = act();
-      const list = [...st.annotations].sort(
+      // Filtered down to the difficult pages when the panel is, so the arrows
+      // and the list it sits above never disagree about what comes next.
+      const hard = new Set(
+        st.annotations.filter((x) => x.type === 'flag').map((x) => x.pageIndex)
+      );
+      const pool = st.marksHardOnly
+        ? st.annotations.filter((x) => hard.has(x.pageIndex))
+        : st.annotations;
+      const list = [...pool].sort(
         (x, y) => x.pageIndex - y.pageIndex || (x.z ?? 0) - (y.z ?? 0)
       );
       if (!list.length) {
-        setError('There are no annotations in this document yet.');
+        setError(
+          st.marksHardOnly
+            ? 'No pages are flagged as difficult yet.'
+            : 'There are no annotations in this document yet.'
+        );
         return;
       }
       const at = list.findIndex((x) => x._id === st.selectedIds[0]);
@@ -817,6 +840,7 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     <div className="h-full flex flex-col">
       <Toolbar
         name={meta.originalName}
+        onRename={rename}
         page={current + 1}
         pageCount={pdf.numPages}
         onGoToPage={goTo}
@@ -930,7 +954,9 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
           )}
         </div>
 
-        {listOpen && <AnnotationList onGo={goTo} onStep={stepAnnotation} />}
+        {listOpen && (
+          <AnnotationList onGo={goTo} onStep={stepAnnotation} current={current} />
+        )}
       </div>
 
       {showHelp && <ShortcutHelp onClose={() => setShowHelp(false)} />}

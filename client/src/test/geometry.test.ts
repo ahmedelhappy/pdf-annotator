@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  bboxOf, computeSnap, intersects, rectToBox, rectToPdf, rotatePoint, scaleData,
-  toPdf, toView, translate, unionBox,
+  bboxOf, computeSnap, FLAG_SIZE, intersects, NOTE_SIZE, rectToBox, rectToPdf,
+  rotatePoint, scaleData, toPdf, toView, translate, unionBox,
 } from '../lib/geometry';
 import type { Annotation } from '../types';
 
@@ -301,5 +301,37 @@ describe('rotatePoint', () => {
     const d0 = Math.hypot(start.x - o.x, start.y - o.y);
     const p = rotatePoint(start, o, 200);
     expect(Math.hypot(p.x - o.x, p.y - o.y)).toBeCloseTo(d0);
+  });
+});
+
+/**
+ * A flag is a point with a fixed size, like a note: it marks a hard part of a
+ * page rather than covering an area, so nothing may give it a width of its own.
+ */
+describe('a flag is a point, not a box', () => {
+  const flag = { type: 'flag', data: { x: 100, y: 200 } } as unknown as Annotation;
+
+  it('has a box of its own fixed size', () => {
+    expect(bboxOf(flag)).toEqual({ x: 100, y: 200, w: FLAG_SIZE, h: FLAG_SIZE });
+  });
+
+  it('is a size of its own, not a note size', () => {
+    expect(FLAG_SIZE).not.toBe(NOTE_SIZE);
+  });
+
+  it('moves rather than stretches when it is scaled', () => {
+    const out = scaleData('flag', flag.data, { x: 0, y: 0 }, 2, 3);
+    expect(out).toEqual({ x: 200, y: 600 });
+    expect(out.w).toBeUndefined();
+    expect(out.h).toBeUndefined();
+  });
+
+  it('translates like anything else', () => {
+    expect(translate('flag', flag.data, 5, -7)).toEqual({ x: 105, y: 193 });
+  });
+
+  it('keeps its size at any scale, so its frame stays over it', () => {
+    const big = scaleData('flag', flag.data, { x: 0, y: 0 }, 10, 10);
+    expect(bboxOf({ type: 'flag', data: big } as unknown as Annotation).w).toBe(FLAG_SIZE);
   });
 });

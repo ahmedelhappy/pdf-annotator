@@ -6,6 +6,14 @@ const schema = new mongoose.Schema(
     filename: { type: String, required: true },
     pageCount: { type: Number, default: 0 },
     thumbnailAssetId: String,
+    // Which revision of the file the thumbnail was drawn from. A page op
+    // rewrites the file and bumps fileRev, so the library can see that a card's
+    // picture is of a document that no longer looks like that and redraw it.
+    fileRev: { type: Number, default: 0 },
+    thumbnailRev: { type: Number, default: 0 },
+    // A document with no PDF behind it to begin with: a blank page to draw on.
+    // Kept only so the library can say what a card is.
+    blank: { type: Boolean, default: false },
     // held while a page op rewrites the file, blocks annotation writes
     busy: { type: Boolean, default: false },
     busySince: Date,

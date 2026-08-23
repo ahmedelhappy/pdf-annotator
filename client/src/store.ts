@@ -196,6 +196,10 @@ type State = {
   sidebarWidth: number;
   shortcuts: ShortcutPrefs;
   listOpen: boolean;
+  /** Marks panel: one line per page rather than one per mark. */
+  marksByPage: boolean;
+  /** Marks panel: only pages carrying a flag. */
+  marksHardOnly: boolean;
   outlineOpen: boolean;
 
   searchQuery: string;
@@ -213,7 +217,9 @@ type State = {
   setEditing: (id: string | null) => void;
   selectPages: (pages: number[]) => void;
   pushPageOp: (label: string) => void;
-  toggle: (k: 'invert' | 'sidebarOpen' | 'listOpen' | 'outlineOpen') => void;
+  toggle: (
+    k: 'invert' | 'sidebarOpen' | 'listOpen' | 'outlineOpen' | 'marksByPage' | 'marksHardOnly'
+  ) => void;
   setSidebarWidth: (px: number) => void;
   setShortcut: (id: string, combo: string | null) => void;
   toggleShortcut: (id: string, on: boolean) => void;
@@ -275,6 +281,8 @@ export const useStore = create<State>((set, get) => ({
   sidebarWidth: loadNumber(SIDEBAR_KEY, 176),
   shortcuts: loadShortcuts(),
   listOpen: false,
+  marksByPage: false,
+  marksHardOnly: false,
   outlineOpen: false,
 
   searchQuery: '',

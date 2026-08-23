@@ -10,7 +10,7 @@ Two npm workspaces driven from the root: `client/` and `server/`.
 npm run setup                    # install root + server + client
 npm run dev                      # concurrently: server on 5174, client on 5173
 npm run sample                   # writes sample.pdf at repo root, 6 pages
-npm test                         # 58 server tests + 119 client tests
+npm test                         # 44 server tests + 92 client tests
 npm --prefix client run typecheck   # tsc --noEmit, must be clean
 ```
 
@@ -176,7 +176,10 @@ in. Everything after is one commit per change.
   copy always wins, whichever order the two happened in.
 - Picking a colour switches to the pen through `store.pickColor`, but only from
   a tool that puts no colour on the page. Changing the shade of a highlighter
-  has to leave you highlighting.
+  has to leave you highlighting. Clicking the swatch already in use opens its
+  shade picker, and anything pressed outside closes it, on a capture-phase
+  window listener: the page swallows a pointerdown before it would ever bubble
+  to the window.
 - Ctrl+Alt+N and Ctrl+Alt+P walk the annotations across the whole document, not
   the pages: `stepAnnotation` sorts by page then `z` and `revealAnn` waits for
   the page to render before converting through its viewport. `alt+arrowup` and
@@ -321,7 +324,30 @@ in. Everything after is one commit per change.
   whichever path asks. Toggle it from the right click menu.
 - The selection frame handles right click itself: its corner handles sit over
   the top-left of the content, so they would otherwise swallow it.
-- Annotation types: ink, highlight, text, note, image. Ink stores `points`
+- A flag marks a hard part of a page. It is a point with a fixed `FLAG_SIZE`,
+  like a note, so `scaleData` only moves it and `bboxOf` gives it its own square.
+  It is a real annotation, not a page property, so page ops renumber it for
+  free and the export draws it. The marks panel groups by the pages carrying
+  one, which is what the "Difficult" filter is.
+- The marks panel has two filters, both off by default so it opens as the plain
+  list it has always been. "By page" gives one row per page rather than one per
+  mark; "Difficult" narrows to pages carrying a flag. `stepAnnotation` reads
+  `marksHardOnly` too, or the arrows would walk past what the list is showing.
+  The panel follows the reader and the selection through one effect keyed on
+  both, scrolling `nearest` and instantly, for the reason the page sidebar does.
+- A document can be renamed from its card in the library or from the name at
+  the top left of the toolbar. Only `originalName` changes; the file on disk
+  keeps its stored `filename`, which is a UUID and never meant anything.
+- `POST /api/documents/blank` writes a one page A4 PDF and a row to go with it.
+  This is a whiteboard as much as a reader, and there was no way in without a
+  PDF to open first. The page size matches what the "+ Add page" strip inserts.
+- `fileRev` on a document counts rewrites of the file, which is what a page op
+  and a page undo both do. `thumbnailRev` records which revision the library
+  card's picture was drawn from, and the library redraws any card where the two
+  disagree. Without it a reorganized document went on showing the page it was
+  added with. Drawn in the library because that is where pdf.js already runs;
+  the server has no canvas.
+- Annotation types: ink, highlight, text, note, image, flag. Ink stores `points`
   (optional pressure `p`), note stores `x, y` plus a fixed `NOTE_SIZE`, the
   rest store `x, y, w, h`. Box types may also carry `rotation`, in degrees
   counter-clockwise like the PDF; CSS turns the other way, so screen

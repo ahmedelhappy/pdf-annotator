@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { rectToBox, toView } from '../lib/geometry';
+import { FLAG_SIZE, rectToBox, toView } from '../lib/geometry';
 import { strokeOutline } from '../lib/ink';
 import { useStore } from '../store';
 import type { Flash } from './Viewer';
@@ -77,6 +77,12 @@ function paint(
       g.beginPath();
       g.arc(v.x, v.y, 3, 0, Math.PI * 2);
       g.fill();
+    } else if (a.type === 'flag') {
+      // Too small here to draw a pennant, so it reads as a stub of a pole.
+      const v = toView(vp, a.data.x, a.data.y);
+      const h = Math.max(4, FLAG_SIZE * vp.scale);
+      g.fillRect(v.x, v.y - h, Math.max(1, h * 0.16), h);
+      g.fillRect(v.x, v.y - h, Math.max(2, h * 0.55), Math.max(2, h * 0.4));
     } else {
       const b = rectToBox(vp, a.data);
       if (a.type === 'image') {

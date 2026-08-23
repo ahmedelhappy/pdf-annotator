@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AUTO_COLOR, MAX_FONT, MIN_FONT, PRESETS, useStore } from '../store';
 import type { Tool } from '../types';
 
@@ -22,6 +22,7 @@ const ICONS: Record<Tool, JSX.Element> = {
   image: (
     <path d="M2.5 3.5h15v13h-15zm1.8 1.8v7.3l3.4-3.4 2.6 2.6 2.6-2.6 2.8 2.8V5.3zm8.4 1.4a1.4 1.4 0 110 2.8 1.4 1.4 0 010-2.8z" />
   ),
+  flag: <path d="M4 1.4h1.7v17.2H4zM6.4 2.2h9.4l-2.4 3.4 2.4 3.4H6.4z" />,
 };
 
 const clampFont = (n: number) => Math.round(Math.min(MAX_FONT, Math.max(MIN_FONT, n)));
@@ -35,10 +36,12 @@ const TOOLS: [Tool, string, string][] = [
   ['text', 'Text', 'T'],
   ['note', 'Note', 'N'],
   ['image', 'Image', 'I'],
+  ['flag', 'Flag a hard part', 'D'],
 ];
 
 type Props = {
   name: string;
+  onRename: (name: string) => void;
   /** 1-based page currently in view, and how many there are. */
   page: number;
   pageCount: number;
@@ -54,7 +57,7 @@ type Props = {
 };
 
 export default function Toolbar({
-  name, page, pageCount, onGoToPage, onZoom, onBack, onExport, onExportJson,
+  name, onRename, page, pageCount, onGoToPage, onZoom, onBack, onExport, onExportJson,
   onHelp, onSearch, exporting,
 }: Props) {
   const tool = useStore((s) => s.tool);
@@ -70,12 +73,30 @@ export default function Toolbar({
   const annotations = useStore((s) => s.annotations);
   const toggle = useStore((s) => s.toggle);
   const setPaletteColor = useStore((s) => s.setPaletteColor);
-  /**
-   * Which swatch has its shade picker open, if any. The swatch itself is the
-   * only thing that closes it, so picking a shade and carrying on drawing does
-   * not make it vanish underneath you.
-   */
+  /** Which swatch has its shade picker open, if any. */
   const [wheel, setWheel] = useState<number | null>(null);
+  const wheelRef = useRef<HTMLSpanElement>(null);
+
+  /**
+   * Anything pressed outside the open picker closes it, the way every other
+   * popover behaves. It used to stay open until you found the same swatch
+   * again, so it sat over the page while you drew.
+   *
+   * Capture phase, because the picker is not the only thing that stops a
+   * pointerdown: a press on the page is handled and swallowed there.
+   */
+  useEffect(() => {
+    if (wheel === null) return;
+    const away = (e: PointerEvent) => {
+      if (!wheelRef.current?.contains(e.target as Node)) setWheel(null);
+    };
+    window.addEventListener('pointerdown', away, true);
+    return () => window.removeEventListener('pointerdown', away, true);
+  }, [wheel]);
+  /** The name while it is being typed. Null when it is only being read. */
+  const [naming, setNaming] = useState<string | null>(null);
+  /** Escape leaves the name alone. Set before the blur that does the saving. */
+  const dropName = useRef(false);
   // Local so typing does not fight the number that scrolling keeps updating.
   const [pageBox, setPageBox] = useState(String(page));
   useEffect(() => setPageBox(String(page)), [page]);
@@ -105,7 +126,39 @@ export default function Toolbar({
   return (
     <div className="flex items-center gap-2 px-3 py-2 bg-neutral-900 text-neutral-200 border-b border-neutral-800 flex-wrap">
       <button className={btn} onClick={onBack}>Library</button>
-      <span className="text-sm text-neutral-400 truncate max-w-40" title={name}>{name}</span>
+      {/* Click the name to rename the document. An empty name is refused by
+          keeping the old one rather than by complaining about it. */}
+      {naming === null ? (
+        <button
+          className="text-sm text-neutral-400 truncate max-w-40 hover:text-neutral-200 rounded px-1"
+          title={`${name}. Click to rename.`}
+          onClick={() => setNaming(name)}
+        >
+          {name}
+        </button>
+      ) : (
+        <input
+          className="text-sm bg-neutral-800 rounded px-1 py-0.5 w-40 text-neutral-100"
+          aria-label="Document name"
+          autoFocus
+          value={naming}
+          onChange={(e) => setNaming(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          onBlur={() => {
+            const next = naming.trim();
+            if (!dropName.current && next && next !== name) onRename(next);
+            dropName.current = false;
+            setNaming(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+            if (e.key === 'Escape') {
+              dropName.current = true;
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+        />
+      )}
 
       <span className="w-px h-5 bg-neutral-700 mx-1" />
       {TOOLS.map(([t, label, key]) => (
@@ -145,7 +198,7 @@ export default function Toolbar({
       </button>
 
       {palette.map((c, i) => (
-        <span key={i} className="relative w-5 h-5">
+        <span key={i} className="relative w-5 h-5" ref={wheel === i ? wheelRef : undefined}>
           <button
             title={
               style.color === c

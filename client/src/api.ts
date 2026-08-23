@@ -35,8 +35,18 @@ export const api = {
     fd.append('file', file);
     return fetch('/api/documents', { method: 'POST', body: fd }).then(j<DocMeta>);
   },
-  setThumbnail: (id: string, thumbnailAssetId: string) =>
-    fetch(`/api/documents/${id}`, jsonPatch({ thumbnailAssetId })).then(j<DocMeta>),
+  /** Renames a document. The file on disk is untouched. */
+  renameDoc: (id: string, originalName: string) =>
+    fetch(`/api/documents/${id}`, jsonPatch({ originalName })).then(j<DocMeta>),
+  /** A document with nothing in it but one white page. */
+  createBlank: (name: string) =>
+    fetch('/api/documents/blank', jsonPost({ name })).then(j<DocMeta>),
+  /**
+   * `fileRev` is the revision the picture was drawn from, so the library can
+   * tell later that the file has been rewritten since and draw it again.
+   */
+  setThumbnail: (id: string, thumbnailAssetId: string, fileRev = 0) =>
+    fetch(`/api/documents/${id}`, jsonPatch({ thumbnailAssetId, fileRev })).then(j<DocMeta>),
   /**
    * Remembers where the reader is, so the document opens there next time. Sent
    * with keepalive so a page turn just before the tab closes still lands.

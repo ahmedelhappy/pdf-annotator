@@ -6,7 +6,7 @@ const schema = new mongoose.Schema(
     pageIndex: { type: Number, required: true },
     type: {
       type: String,
-      enum: ['ink', 'highlight', 'text', 'note', 'image'],
+      enum: ['ink', 'highlight', 'text', 'note', 'image', 'flag'],
       required: true,
     },
     // Every coordinate inside `data` is PDF user space: points, origin

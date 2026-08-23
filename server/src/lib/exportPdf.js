@@ -5,6 +5,9 @@ import fontkit from '@pdf-lib/fontkit';
 import { strokeOutline } from './ink.js';
 import { ASSET_DIR } from './storage.js';
 
+/** Matches FLAG_SIZE in client/src/lib/geometry.ts, in PDF points. */
+const FLAG_SIZE = 18;
+
 const FONT_DIR = path.resolve('./fonts');
 let fontBytes = null;
 let fontChecked = false;
@@ -91,7 +94,7 @@ export async function buildAnnotatedPdf(filePath, annotations, hiddenPages = [])
 
   // Explicit layer order wins. Within one z, types keep their natural stacking
   // so an untouched document exports exactly as it always did.
-  const layer = { highlight: 0, image: 1, ink: 2, text: 3, note: 4 };
+  const layer = { highlight: 0, image: 1, ink: 2, text: 3, note: 4, flag: 5 };
   const sorted = [...annotations].sort(
     (a, b) => (a.z ?? 0) - (b.z ?? 0) || (layer[a.type] ?? 9) - (layer[b.type] ?? 9)
   );
@@ -137,6 +140,25 @@ export async function buildAnnotatedPdf(filePath, annotations, hiddenPages = [])
           blendMode: BlendMode.Multiply,
         });
       }
+    }
+
+    // A flag marks a hard part of the page, so it has to be on the printed copy
+    // too: a pennant on a pole, drawn from lines rather than a glyph, since
+    // Helvetica has nothing of the sort.
+    if (a.type === 'flag') {
+      const h = FLAG_SIZE;
+      const pole = Math.max(0.8, h * 0.09);
+      page.drawRectangle({
+        x: a.data.x, y: a.data.y, width: pole, height: h, color: col,
+        opacity: a.style?.opacity ?? 1,
+      });
+      page.drawSvgPath(`M0 0 L${h * 0.47} 0 L${h * 0.35} ${h * 0.17} L${h * 0.47} ${h * 0.34} L0 ${h * 0.34} Z`, {
+        x: a.data.x + pole,
+        y: a.data.y + h,
+        color: col,
+        opacity: a.style?.opacity ?? 1,
+      });
+      continue;
     }
 
     if (a.type === 'text' || a.type === 'note') {

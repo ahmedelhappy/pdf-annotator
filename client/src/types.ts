@@ -4,9 +4,10 @@ export type Rect = { x: number; y: number; w: number; h: number };
 export type Box = { left: number; top: number; width: number; height: number };
 
 export type Style = { color: string; width: number; opacity: number; fontSize: number };
-export type AnnType = 'ink' | 'highlight' | 'text' | 'note' | 'image';
+export type AnnType = 'ink' | 'highlight' | 'text' | 'note' | 'image' | 'flag';
 export type Tool =
-  | 'select' | 'ink' | 'eraser' | 'highlight' | 'rect' | 'text' | 'note' | 'image';
+  | 'select' | 'ink' | 'eraser' | 'highlight' | 'rect' | 'text' | 'note' | 'image'
+  | 'flag';
 
 export type Annotation = {
   _id: string;
@@ -27,6 +28,12 @@ export type DocMeta = {
   filename: string;
   pageCount: number;
   thumbnailAssetId?: string;
+  /** Bumped every time the file itself is rewritten, which page ops do. */
+  fileRev?: number;
+  /** Which revision the thumbnail was drawn from. Behind means it is stale. */
+  thumbnailRev?: number;
+  /** Started as an empty page rather than from a PDF. */
+  blank?: boolean;
   updatedAt: string;
   deletedAt?: string;
   /** Pages kept in the file but skipped in the viewer and at export. */

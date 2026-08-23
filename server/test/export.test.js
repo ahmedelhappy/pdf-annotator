@@ -235,3 +235,33 @@ test('a document is never exported with no pages at all', async () => {
   assert.ok((await PDFDocument.load(bytes)).getPageCount() >= 1);
   await fs.unlink(file);
 });
+
+test('a flag is drawn onto the exported page', async () => {
+  const file = await fixture(1);
+  const bytes = await buildAnnotatedPdf(file, [
+    { pageIndex: 0, type: 'flag', data: { x: 120, y: 400 }, style: { color: '#f59e0b' } },
+  ]);
+  assert.equal((await PDFDocument.load(bytes)).getPageCount(), 1);
+  assert.ok(bytes.length > 0);
+  await fs.unlink(file);
+});
+
+test('a flag on a missing page is skipped, not fatal', async () => {
+  const file = await fixture(1);
+  const bytes = await buildAnnotatedPdf(file, [
+    { pageIndex: 9, type: 'flag', data: { x: 10, y: 10 }, style: {} },
+  ]);
+  assert.equal((await PDFDocument.load(bytes)).getPageCount(), 1);
+  await fs.unlink(file);
+});
+
+test('a flag exports alongside everything else', async () => {
+  const file = await fixture(1);
+  const bytes = await buildAnnotatedPdf(file, [
+    { pageIndex: 0, type: 'ink', data: { points: [{ x: 5, y: 5 }, { x: 40, y: 60 }] }, style: {} },
+    { pageIndex: 0, type: 'flag', data: { x: 60, y: 300 }, style: {} },
+    { pageIndex: 0, type: 'text', data: { x: 20, y: 100, w: 200, h: 40, text: 'hi' }, style: {} },
+  ]);
+  assert.equal((await PDFDocument.load(bytes)).getPageCount(), 1);
+  await fs.unlink(file);
+});

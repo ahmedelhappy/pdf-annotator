@@ -6,3 +6,6 @@ server/fonts/*.ttf
 server/fonts/*.otf
 *.log
 sample.pdf
+
+# Local browser checks. Not part of the repo: see CLAUDE.md on UI testing.
+.scratch/

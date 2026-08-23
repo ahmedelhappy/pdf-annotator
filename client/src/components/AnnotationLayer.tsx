@@ -5,7 +5,7 @@ import {
 } from '../store';
 import { api } from '../api';
 import {
-  bboxOf, computeSnap, intersects, localPoint, NOTE_SIZE,
+  bboxOf, computeSnap, FLAG_SIZE, intersects, localPoint, NOTE_SIZE,
   rectToBox, rectToPdf, rotatePoint, scaleData, toPdf, toView, translate, unionBox,
   type Guide,
 } from '../lib/geometry';
@@ -356,6 +356,26 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
         act().setTool('select');
         act().select(created._id);
         act().setEditing(created._id);
+      }
+      return;
+    }
+    // A flag says "this bit is hard". One click, nothing to fill in, and the
+    // marks panel can then filter the document down to these alone.
+    if (tool === 'flag') {
+      const created = await act().add({
+        pageIndex,
+        type: 'flag',
+        style: styleOver({
+          left: p.x,
+          top: p.y - FLAG_SIZE * viewport.scale,
+          width: 12,
+          height: 12,
+        }),
+        data: toPdf(viewport, p.x, p.y),
+      });
+      if (created) {
+        act().setTool('select');
+        act().select(created._id);
       }
       return;
     }
@@ -1480,8 +1500,8 @@ function HtmlAnnotation({
     let next = translate(ann.type, drag.current.data, dx, -dy);
     if (!e.altKey) {
       const rect: Rect =
-        ann.type === 'note'
-          ? { x: next.x, y: next.y, w: NOTE_SIZE, h: NOTE_SIZE }
+        ann.type === 'note' || ann.type === 'flag'
+          ? { x: next.x, y: next.y, w: bboxOf(ann).w, h: bboxOf(ann).h }
           : { x: next.x, y: next.y, w: next.w, h: next.h };
       const snap = computeSnap(rect, neighbours, pageSize, SNAP_PX / scale);
       if (snap.dx || snap.dy) next = translate(ann.type, next, snap.dx, snap.dy);
@@ -1548,9 +1568,50 @@ function HtmlAnnotation({
 
     onMoveToPage(
       to,
-      ann.type === 'note'
-        ? { ...ann.data, ...toPdf(tvp, lx, ly + NOTE_SIZE) }
+      ann.type === 'note' || ann.type === 'flag'
+        ? { ...ann.data, ...toPdf(tvp, lx, ly + (ann.type === 'flag' ? FLAG_SIZE : NOTE_SIZE)) }
         : { ...ann.data, ...rectToPdf(tvp, { x: lx, y: ly }, { x: lx + d.boxW, y: ly + d.boxH }) }
+    );
+  }
+
+  if (ann.type === 'flag') {
+    // Drawn at its stored size in points, like a note's dot, so the selection
+    // frame sits over it at every zoom.
+    const p = toView(viewport, ann.data.x, ann.data.y + FLAG_SIZE);
+    const size = FLAG_SIZE * scale;
+    return (
+      <div
+        style={{
+          position: 'absolute',
+          left: p.x,
+          top: p.y,
+          width: size,
+          height: size,
+          pointerEvents: inert ? 'none' : 'auto',
+          zIndex: dragging ? 999 : (ann.z ?? 0),
+        }}
+        title="Marked as difficult"
+        onPointerDown={(e) => start(e, 'move')}
+        onPointerMove={move}
+        onPointerUp={end}
+        onContextMenu={onMenu}
+      >
+        <svg
+          viewBox="0 0 20 20"
+          className="w-full h-full block cursor-move drop-shadow"
+          fill={ann.style.color}
+          aria-hidden
+        >
+          {/* A pennant on a pole, outlined in white so it reads on ink as
+              well as on paper. */}
+          <path
+            d="M4 1.4h1.7v17.2H4zM6.4 2.2h9.4l-2.4 3.4 2.4 3.4H6.4z"
+            stroke="#fff"
+            strokeWidth="0.9"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
     );
   }
 

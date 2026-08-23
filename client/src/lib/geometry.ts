@@ -52,6 +52,11 @@ export function localPoint(el: HTMLElement, e: { clientX: number; clientY: numbe
 }
 
 export const NOTE_SIZE = 16;
+/**
+ * A flag marks a hard part of the page. Like a note it is a point rather than a
+ * box, so it keeps one size whatever it is dropped on.
+ */
+export const FLAG_SIZE = 18;
 
 /** Bounding box in PDF user space, whatever the annotation's shape. */
 export function bboxOf(a: Annotation): Rect {
@@ -69,6 +74,7 @@ export function bboxOf(a: Annotation): Rect {
     return { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
   }
   if (a.type === 'note') return { x: a.data.x, y: a.data.y, w: NOTE_SIZE, h: NOTE_SIZE };
+  if (a.type === 'flag') return { x: a.data.x, y: a.data.y, w: FLAG_SIZE, h: FLAG_SIZE };
   return { x: a.data.x, y: a.data.y, w: a.data.w, h: a.data.h };
 }
 
@@ -179,7 +185,8 @@ export function scaleData(type: string, data: any, o: Pt, sx: number, sy: number
       ...data,
       points: (data.points || []).map((p: InkPt) => ({ ...p, x: px(p.x), y: py(p.y) })),
     };
-  if (type === 'note') return { ...data, x: px(data.x), y: py(data.y) };
+  // A note and a flag are points with a fixed size, so scaling only moves them.
+  if (type === 'note' || type === 'flag') return { ...data, x: px(data.x), y: py(data.y) };
 
   const out = { ...data, x: px(data.x), y: py(data.y), w: data.w * sx, h: data.h * sy };
   // A highlight spanning several lines carries one box per line. They scale
