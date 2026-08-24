@@ -22,6 +22,18 @@ const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n
 /** The space between two pages, and the room the insert strip has to live in. */
 const GAP_PX = 34;
 
+/**
+ * How hard a pinch bites. One mouse notch arrives as a delta of 100 or 120 and
+ * is clamped to 60, which lands near a tenth per notch, matching what the
+ * buttons do. A trackpad's deltas are a few pixels each, so the same rate reads
+ * as continuous.
+ */
+const ZOOM_RATE = 0.0018;
+/** How long after the last pinch event the pages redraw sharply. */
+const ZOOM_SETTLE = 180;
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 8;
+
 /** How long a page card stays pointed out, and how long one takes to leave. */
 const FLASH_MS = 1400;
 const LEAVE_MS = 280;
@@ -97,6 +109,8 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
   const [panning, setPanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
+  /** True while a pinch is running, which holds every page's redraw. */
+  const [zooming, setZooming] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   /** A paste was asked for and the clipboard has not answered yet. */
@@ -506,31 +520,52 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     el.scrollTop = shell.offsetTop + z.fy * shell.offsetHeight - z.vy;
   }, [scale]);
 
-  // Ctrl + wheel zooms the document rather than the browser chrome. Deltas are
-  // gathered and applied once per frame: a trackpad fires these faster than the
-  // pages can redraw, and one zoom per event made it lurch.
+  /**
+   * Pinching the trackpad magnifies the document under the cursor, the way a
+   * web page behaves, rather than stepping the zoom the way Ctrl and the
+   * buttons do.
+   *
+   * Two things make it feel like a magnifier rather than a reload:
+   *
+   * The zoom follows the size of the gesture instead of counting events. A
+   * trackpad sends a stream of small deltas, and treating each as a full notch
+   * took a gentle pinch from 100 to 600 percent in one go.
+   *
+   * `zooming` holds every page's redraw until the gesture stops. The shells
+   * resize immediately, so the bitmap already on screen stretches to fill them
+   * and the page simply gets bigger, like an image. Redrawing per step meant
+   * pdf.js rendering the whole document over and over, seventeen times in one
+   * pinch, and the page flickering between sizes while it caught up.
+   */
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    let steps = 0;
+    let factor = 1;
     let at: { x: number; y: number } | null = null;
     let queued = 0;
+    let settle: ReturnType<typeof setTimeout> | null = null;
 
     function flush() {
       queued = 0;
-      const n = steps;
-      steps = 0;
-      if (!n || !at) return;
+      const f = factor;
+      factor = 1;
+      if (f === 1 || !at) return;
       const st = useStore.getState();
-      // Multiplicative, so each notch feels the same at any zoom level.
-      zoomAround(st.scale * Math.pow(1.12, n), at.x, at.y);
+      zoomAround(clamp(st.scale * f, MIN_SCALE, MAX_SCALE), at.x, at.y);
     }
 
     function onWheel(e: WheelEvent) {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      steps += e.deltaY < 0 ? 1 : -1;
+      // Clamped so one notch of a mouse wheel, which arrives as 100 or 120,
+      // still moves about a tenth, while a trackpad's handful of pixels moves
+      // a fraction of a percent and the whole gesture reads as continuous.
+      const d = Math.max(-60, Math.min(60, e.deltaY));
+      factor *= Math.exp(-d * ZOOM_RATE);
       at = { x: e.clientX, y: e.clientY };
+      setZooming(true);
+      if (settle) clearTimeout(settle);
+      settle = setTimeout(() => setZooming(false), ZOOM_SETTLE);
       if (!queued) queued = requestAnimationFrame(flush);
     }
 
@@ -538,6 +573,7 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     return () => {
       el.removeEventListener('wheel', onWheel);
       if (queued) cancelAnimationFrame(queued);
+      if (settle) clearTimeout(settle);
     };
   }, [pdf, zoomAround]);
 
@@ -966,6 +1002,7 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
                 pageIndex={i}
                 scale={scale}
                 natural={pageSizes[i]}
+                defer={zooming}
               />,
             ];
             if (n === shown.length - 1)

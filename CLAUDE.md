@@ -117,9 +117,9 @@ in. Everything after is one commit per change.
   shortcuts survive an Arabic or Cyrillic keyboard. Punctuation codes carry
   their US shifted twin, because the bindings are written that way (`{`, not
   `shift+[`).
-- A re-render keeps the last bitmap and stretches it until the new one is ready,
-  so zooming never flashes white. A page scrolled far away drops that copy too,
-  because coming back blank is the point of releasing it.
+- A re-render leaves the bitmap on screen alone and paints the new one over it
+  when it is complete, so zooming never flashes white. A page scrolled far away
+  drops it, because coming back blank is the point of releasing it.
 - The ink preview is simplified with the same tolerance as the saved stroke, or
   releasing the button visibly nudges the corners you just drew.
 - `strokeOutline` runs a quadratic through the midpoints between points rather
@@ -158,6 +158,27 @@ in. Everything after is one commit per change.
   so neither axis grows by the ratio. Holding a point near a centred page's left
   edge needs a negative scroll offset, so the browser clamps it; Chrome's viewer
   does the same. Wheel deltas are gathered per frame and applied multiplicatively.
+- A pinch magnifies rather than reloads. Two things make that so, and both were
+  bugs first:
+  - The zoom follows the **size** of the delta, `exp(-delta * ZOOM_RATE)` with
+    the delta clamped to 60, not the count of events. A mouse notch arrives as
+    100 or 120 and lands near a tenth, matching the buttons; a trackpad's few
+    pixels per event read as continuous. Counting events took a gentle pinch
+    from 100 to 600 percent in one gesture.
+  - `zooming` holds every page's redraw until `ZOOM_SETTLE` after the last
+    event, and PdfPage takes it as `defer`. The shells resize immediately, so
+    the bitmap already on screen stretches to fill them and the page simply
+    grows, like an image. Redrawing per step had pdf.js rendering the whole
+    document seventeen times in one pinch.
+  - While deferring, the **viewport still follows the scale**, synchronously,
+    off the page object already in hand. Annotations are placed through it, so
+    without that they kept the size they were last drawn at and slid off the
+    page as it grew under them.
+- A page is drawn into a scratch canvas and put on screen in one step, never
+  drawn into the canvas being looked at. Resizing a canvas wipes it and the
+  render that follows is asynchronous, so there was a frame with the canvas
+  sized but empty. Holding the old bitmap and stretching it covered most of
+  that but not that frame.
 - Only the bindings named in `DEFAULT_ON` start switched on; the rest are in the
   table and listed in the shortcut sheet, waiting to be turned on. What the user
   rebinds or disables lives in `store.shortcuts` and localStorage, and

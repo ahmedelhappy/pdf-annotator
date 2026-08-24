@@ -13,15 +13,19 @@ type Props = {
   scale: number;
   /** This page's size at scale 1, measured once when the document loaded. */
   natural: { w: number; h: number } | undefined;
+  /** Hold the redraw: a pinch is running and the bitmap is being stretched. */
+  defer?: boolean;
 };
 
-export default function PdfPage({ pdf, pageIndex, scale, natural }: Props) {
+export default function PdfPage({ pdf, pageIndex, scale, natural, defer }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const taskRef = useRef<any>(null);
-  /** Holds the last drawn bitmap so a re-render never shows a blank page. */
+  /** Scratch surface a page is drawn into before it goes on screen. */
   const keep = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+  /** The pdf.js page, kept so a viewport can be had without awaiting anything. */
+  const pageRef = useRef<any>(null);
 
   const [viewport, setViewport] = useState<any>(null);
   const [near, setNear] = useState(false);
@@ -64,53 +68,71 @@ export default function PdfPage({ pdf, pageIndex, scale, natural }: Props) {
       c.width = 0;
       c.height = 0;
     }
-    // Releasing the canvas is the whole point here, so let the held copy go
+    // Releasing the canvas is the whole point here, so let the scratch go
     // too. A page scrolled far away is meant to come back blank for a moment.
     keep.current.width = 0;
     keep.current.height = 0;
     textRef.current?.replaceChildren();
+    pageRef.current = null;
     pageViewports.delete(pageIndex);
     setViewport(null);
     setHits([]);
   }, [near, pageIndex]);
 
+  /**
+   * The viewport follows the scale at once, even while the redraw is held back.
+   * Annotations are placed through it, so without this they kept the size they
+   * were last drawn at and slid off the page as it grew under them. Making one
+   * is matrix arithmetic on a page object already in hand, not a render, so it
+   * costs nothing to do every frame of a pinch.
+   */
+  useEffect(() => {
+    if (!defer || !near || !pageRef.current) return;
+    const vp = pageRef.current.getViewport({ scale });
+    pageViewports.set(pageIndex, vp);
+    setViewport(vp);
+  }, [defer, scale, near, pageIndex]);
+
   useEffect(() => {
     if (!near) return;
+    // Held: the shell already has its new size and the canvas is stretched to
+    // fill it, so the page magnifies like an image. The sharp copy is drawn
+    // once the gesture stops, rather than once per step of it.
+    if (defer) return;
     let cancelled = false;
 
     (async () => {
       const page = await pdf.getPage(pageIndex + 1);
+      pageRef.current = page;
       const vp = page.getViewport({ scale });
       if (cancelled) return;
 
       const canvas = canvasRef.current;
       if (!canvas) return;
       const ratio = dpr();
+      const w = Math.floor(vp.width * ratio);
+      const h = Math.floor(vp.height * ratio);
 
-      // Resizing a canvas wipes it, and the fresh render is asynchronous, so
-      // the page would flash white in between and look like it was reloading.
-      // Keep the old picture, stretched to the new size, until the real one
-      // arrives. Blurry for a frame or two beats blank.
-      const held = keep.current;
-      if (canvas.width && canvas.height) {
-        held.width = canvas.width;
-        held.height = canvas.height;
-        held.getContext('2d')?.drawImage(canvas, 0, 0);
-      }
-      const stale = held.width > 0 && held.height > 0;
-
-      canvas.width = Math.floor(vp.width * ratio);
-      canvas.height = Math.floor(vp.height * ratio);
-      if (stale) {
-        const g = canvas.getContext('2d');
-        g?.drawImage(held, 0, 0, held.width, held.height, 0, 0, canvas.width, canvas.height);
-      }
+      /*
+       * Drawn into a scratch canvas and put on screen in one go, rather than
+       * drawn into the one being looked at.
+       *
+       * Resizing a canvas wipes it, and the render that follows is
+       * asynchronous, so the page went blank for as long as it took. Holding
+       * the old bitmap and stretching it covered most of that, but not the
+       * frame between the wipe and the stretch. Off screen there is no such
+       * frame: the canvas on show keeps its picture, stretched by the shell
+       * around it, until a complete one is ready to replace it.
+       */
+      const scratch = keep.current;
+      scratch.width = w;
+      scratch.height = h;
 
       // Cancel any in-flight render first, or pdf.js throws
       // "Cannot use the same canvas during multiple render() operations".
       taskRef.current?.cancel();
       const task = page.render({
-        canvasContext: canvas.getContext('2d'),
+        canvasContext: scratch.getContext('2d'),
         viewport: vp,
         transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined,
       });
@@ -124,6 +146,12 @@ export default function PdfPage({ pdf, pageIndex, scale, natural }: Props) {
       }
       if (cancelled) return;
 
+      // Nothing between these two lines, so no paint can catch the canvas
+      // sized but empty.
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d')?.drawImage(scratch, 0, 0);
+
       await buildTextLayer(page, textRef.current!, vp);
       pageViewports.set(pageIndex, vp);
       setViewport(vp);
@@ -133,7 +161,7 @@ export default function PdfPage({ pdf, pageIndex, scale, natural }: Props) {
       cancelled = true;
       taskRef.current?.cancel();
     };
-  }, [pdf, pageIndex, scale, near]);
+  }, [pdf, pageIndex, scale, near, defer]);
 
   useEffect(
     () => () => {
