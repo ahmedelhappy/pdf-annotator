@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { drawThumbnail, loadPdf, pageViewports } from '../pdf';
-import { toPdf, toView } from '../lib/geometry';
+import { setMagnified, toPdf, toView } from '../lib/geometry';
 import { textHeight } from '../lib/text';
 
 import { api } from '../api';
@@ -23,14 +23,20 @@ const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n
 const GAP_PX = 34;
 
 /**
- * How hard a pinch bites. One mouse notch arrives as a delta of 100 or 120 and
- * is clamped to 60, which lands near a tenth per notch, matching what the
- * buttons do. A trackpad's deltas are a few pixels each, so the same rate reads
- * as continuous.
+ * A pinch on the trackpad magnifies what is on screen and leaves the document's
+ * zoom alone, the way pinching a web page does. Ctrl with a mouse wheel, the
+ * buttons and Ctrl+= all change the zoom itself and redraw sharply.
+ *
+ * They are told apart by the size of the delta. A mouse notch arrives as 100 or
+ * 120; a trackpad sends a stream of single figures.
  */
-const ZOOM_RATE = 0.0018;
-/** How long after the last pinch event the pages redraw sharply. */
-const ZOOM_SETTLE = 180;
+const NOTCH = 50;
+/** The rate a pinch magnifies at, which is what every web page uses. */
+const PINCH_RATE = 0.01;
+/** Per notch of a mouse wheel, about a tenth, matching the buttons. */
+const NOTCH_RATE = 0.0018;
+/** A magnifier only ever makes things bigger, never smaller than the page is. */
+const MAX_MAG = 6;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 8;
 
@@ -109,8 +115,24 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
   const [panning, setPanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
-  /** True while a pinch is running, which holds every page's redraw. */
-  const [zooming, setZooming] = useState(false);
+  /**
+   * How much the page is magnified over its zoom. One CSS transform over the
+   * whole document, so the canvas, the pictures and every annotation grow
+   * together, in one frame, with nothing re-rendering and nothing to wait for.
+   */
+  const [mag, setMag] = useState(1);
+  /** Read from a wheel handler that was installed before the state existed. */
+  const magRef = useRef(1);
+  /** Where to put the scroll once the magnified layer has its new size. */
+  const magScroll = useRef<{ left: number; top: number } | null>(null);
+  const magOuterRef = useRef<HTMLDivElement>(null);
+  const magInnerRef = useRef<HTMLDivElement>(null);
+  /**
+   * What the document measures at rest. Taken once, as the magnifier leaves 1,
+   * because reading it while the transform is on gives the magnified size back
+   * and the layer would grow without end.
+   */
+  const [magBox, setMagBox] = useState({ w: 0, h: 0 });
 
   const scrollRef = useRef<HTMLDivElement>(null);
   /** A paste was asked for and the clipboard has not answered yet. */
@@ -316,7 +338,8 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
             : { x: a.data?.x ?? 0, y: a.data?.y ?? 0 };
           const v = toView(vp, p.x, p.y);
           el.scrollTo({
-            top: shell.offsetTop + v.y - el.clientHeight / 2,
+            // Laid out unmagnified, scrolled magnified.
+            top: (shell.offsetTop + v.y) * magRef.current - el.clientHeight / 2,
             behavior: 'smooth',
           });
           return;
@@ -459,6 +482,10 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
       const vp = (await pdf.getPage(current + 1)).getViewport({ scale: 1 });
       const box = scrollRef.current.getBoundingClientRect();
       const byWidth = (box.width - 80) / vp.width;
+      // Fitting is a statement about the whole page, so it drops the magnifier
+      // the way the buttons and Ctrl+= do. Left on, a fit to width came out
+      // magnified and did not fit.
+      setMag(1);
       act().setScale(mode === 'width' ? byWidth : Math.min(byWidth, (box.height - 40) / vp.height));
     },
     [pdf, current]
@@ -516,26 +543,46 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     if (!z || !el) return;
     const shell = el.querySelector(`[data-page="${z.pageIndex}"]`) as HTMLElement | null;
     if (!shell) return;
-    el.scrollLeft = shell.offsetLeft + z.fx * shell.offsetWidth - z.vx;
-    el.scrollTop = shell.offsetTop + z.fy * shell.offsetHeight - z.vy;
+    // This render's magnification, not the ref. An explicit zoom clears the
+    // magnifier in the same commit, and the ref is not put back to 1 until the
+    // effect below runs, which is after this one. Reading it there scrolled by
+    // a magnification that had just been thrown away, so zooming out of a
+    // magnified page jumped to the wrong place.
+    el.scrollLeft = (shell.offsetLeft + z.fx * shell.offsetWidth) * mag - z.vx;
+    el.scrollTop = (shell.offsetTop + z.fy * shell.offsetHeight) * mag - z.vy;
   }, [scale]);
 
+  /** Hands the pointer code the same number the transform is using. */
+  useLayoutEffect(() => {
+    setMagnified(mag);
+    magRef.current = mag;
+  }, [mag]);
+
   /**
-   * Pinching the trackpad magnifies the document under the cursor, the way a
-   * web page behaves, rather than stepping the zoom the way Ctrl and the
-   * buttons do.
+   * Puts the scroll where it has to be for the point under the cursor to have
+   * stayed there. Layout effect, so it lands in the same paint as the size
+   * change and the document never jumps.
+   */
+  useLayoutEffect(() => {
+    const want = magScroll.current;
+    magScroll.current = null;
+    const el = scrollRef.current;
+    if (!want || !el) return;
+    el.scrollLeft = want.left;
+    el.scrollTop = want.top;
+  }, [mag]);
+
+  /**
+   * Ctrl and the wheel. Which of the two things it does depends on where the
+   * event came from, and the size of the delta is what says so.
    *
-   * Two things make it feel like a magnifier rather than a reload:
+   * A pinch on a trackpad magnifies: one transform over the whole document,
+   * anchored on the cursor, leaving the zoom untouched. Nothing re-renders, so
+   * the page, its pictures and its annotations all grow in the same frame, and
+   * pinching back out puts it exactly as it was. This is what a web page does.
    *
-   * The zoom follows the size of the gesture instead of counting events. A
-   * trackpad sends a stream of small deltas, and treating each as a full notch
-   * took a gentle pinch from 100 to 600 percent in one go.
-   *
-   * `zooming` holds every page's redraw until the gesture stops. The shells
-   * resize immediately, so the bitmap already on screen stretches to fill them
-   * and the page simply gets bigger, like an image. Redrawing per step meant
-   * pdf.js rendering the whole document over and over, seventeen times in one
-   * pinch, and the page flickering between sizes while it caught up.
+   * A notch of a mouse wheel zooms the document itself, which redraws the pages
+   * sharply at the new size, the same as the buttons and Ctrl+=.
    */
   useEffect(() => {
     const el = scrollRef.current;
@@ -543,29 +590,71 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     let factor = 1;
     let at: { x: number; y: number } | null = null;
     let queued = 0;
-    let settle: ReturnType<typeof setTimeout> | null = null;
 
     function flush() {
       queued = 0;
       const f = factor;
       factor = 1;
-      if (f === 1 || !at) return;
-      const st = useStore.getState();
-      zoomAround(clamp(st.scale * f, MIN_SCALE, MAX_SCALE), at.x, at.y);
+      if (f === 1 || !at || !el) return;
+
+      const was = magRef.current;
+      const now = clamp(was * f, 1, MAX_MAG);
+      if (now === was) return;
+
+      // Measured while nothing is transformed, or the layer grows without end.
+      if (was === 1 && magInnerRef.current) {
+        setMagBox({
+          w: magInnerRef.current.scrollWidth,
+          h: magInnerRef.current.scrollHeight,
+        });
+      }
+
+      /*
+       * Where the cursor is over the document, unmagnified, and where the
+       * scroll has to be for it to still be there afterwards.
+       *
+       * Measured against the magnified layer itself rather than the scroller,
+       * because the scroller is padded on the left and the layer starts inside
+       * that padding. Reading the scroller's edge put the anchor forty pixels
+       * out, so the page crept sideways as it grew.
+       */
+      const inner = magInnerRef.current;
+      if (!inner) return;
+      const ir = inner.getBoundingClientRect();
+      const ux = (at.x - ir.left) / was;
+      const uy = (at.y - ir.top) / was;
+      magScroll.current = {
+        left: ir.left + el.scrollLeft + ux * now - at.x,
+        top: ir.top + el.scrollTop + uy * now - at.y,
+      };
+      magRef.current = now;
+      setMag(now);
     }
 
     function onWheel(e: WheelEvent) {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      // Clamped so one notch of a mouse wheel, which arrives as 100 or 120,
-      // still moves about a tenth, while a trackpad's handful of pixels moves
-      // a fraction of a percent and the whole gesture reads as continuous.
-      const d = Math.max(-60, Math.min(60, e.deltaY));
-      factor *= Math.exp(-d * ZOOM_RATE);
+
+      if (Math.abs(e.deltaY) >= NOTCH) {
+        // A mouse wheel. Zoom the document, sharply, as it always has.
+        // Clamped to one notch's worth, so spinning fast does not overshoot.
+        const d = Math.max(-60, Math.min(60, e.deltaY));
+        const st = useStore.getState();
+        // An explicit zoom lets go of the magnifier, the same as the buttons
+        // and Ctrl+=. It also keeps `magBox` honest: that is measured once as
+        // the magnifier leaves 1, so a zoom underneath a live magnification
+        // would leave the scrollable area the size of the old layout.
+        setMag(1);
+        zoomAround(
+          clamp(st.scale * Math.exp(-d * NOTCH_RATE), MIN_SCALE, MAX_SCALE),
+          e.clientX,
+          e.clientY
+        );
+        return;
+      }
+
+      factor *= Math.exp(-e.deltaY * PINCH_RATE);
       at = { x: e.clientX, y: e.clientY };
-      setZooming(true);
-      if (settle) clearTimeout(settle);
-      settle = setTimeout(() => setZooming(false), ZOOM_SETTLE);
       if (!queued) queued = requestAnimationFrame(flush);
     }
 
@@ -573,7 +662,6 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     return () => {
       el.removeEventListener('wheel', onWheel);
       if (queued) cancelAnimationFrame(queued);
-      if (settle) clearTimeout(settle);
     };
   }, [pdf, zoomAround]);
 
@@ -590,7 +678,11 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
       const vp = pageViewports.get(Number(shell.dataset.page));
       if (!vp) return;
       const r = shell.getBoundingClientRect();
-      const p = toPdf(vp, e.clientX - r.left, e.clientY - r.top);
+      // The rect comes back magnified, so the offset into it does too. Without
+      // dividing it back out a paste landed further down the page the more the
+      // page was magnified.
+      const m = magRef.current;
+      const p = toPdf(vp, (e.clientX - r.left) / m, (e.clientY - r.top) / m);
       dropAt.current = { pageIndex: Number(shell.dataset.page), x: p.x, y: p.y };
     }
     el.addEventListener('pointermove', onMove);
@@ -724,7 +816,12 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
         return useStore.getState().scale;
       },
       // Keyboard zoom holds the middle of the view, not the top-left corner.
-      setScale: (n) => zoomAround(n),
+      // An explicit zoom clears the magnifier, so someone without a trackpad
+      // is never stuck inside one with no way back out.
+      setScale: (n) => {
+        setMag(1);
+        zoomAround(n);
+      },
       fit,
       undo: () => act().undo(),
       redo: () => act().redo(),
@@ -860,7 +957,7 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
     const el = scrollRef.current;
     const shell = el?.querySelector(`[data-page="${want}"]`) as HTMLElement | null;
     if (!el || !shell) return;
-    el.scrollTop = shell.offsetTop - GAP_PX;
+    el.scrollTop = shell.offsetTop * magRef.current - GAP_PX;
     setCurrent(want);
   }, [pdf, pageSizes]);
 
@@ -915,7 +1012,10 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
         page={current + 1}
         pageCount={pdf.numPages}
         onGoToPage={goTo}
-        onZoom={(n) => zoomAround(n)}
+        onZoom={(n) => {
+          setMag(1);
+          zoomAround(n);
+        }}
         onBack={onBack}
         onHelp={() => setShowHelp(true)}
         onSearch={() => setShowSearch(true)}
@@ -993,6 +1093,25 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
             can go in wherever you are reading instead of only from the
             thumbnail bar.
           */}
+          {/*
+            The magnifier. The outer box carries the magnified size so the
+            scroller knows how far there is to scroll; the inner one carries the
+            transform and keeps its own unmagnified width, so the pages inside
+            lay out exactly as they do at rest.
+
+            Both are absent at rest rather than left at scale(1): a transform
+            makes an element a containing block, and the page shells are what
+            everything measuring the document reaches for.
+          */}
+          <div ref={magOuterRef} style={mag === 1 ? undefined : { width: magBox.w * mag, height: magBox.h * mag }}>
+          <div
+            ref={magInnerRef}
+            style={
+              mag === 1
+                ? undefined
+                : { width: magBox.w, transformOrigin: '0 0', transform: `scale(${mag})` }
+            }
+          >
           {shown.flatMap((i, n) => {
             const row = [
               <PageGap key={`gap-${reloadKey}-${i}`} at={i} busy={busy} onInsert={insertAt} />,
@@ -1002,7 +1121,6 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
                 pageIndex={i}
                 scale={scale}
                 natural={pageSizes[i]}
-                defer={zooming}
               />,
             ];
             if (n === shown.length - 1)
@@ -1017,6 +1135,8 @@ export default function Viewer({ docId, onBack }: { docId: string; onBack: () =>
               );
             return row;
           })}
+          </div>
+          </div>
 
           {panning && (
             <div

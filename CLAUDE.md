@@ -32,6 +32,12 @@ which take the pdf.js viewport. Page rotation lives inside the PDF and pdf.js
 folds it into that viewport, so annotations rotate with their page for free.
 Hand-written rotation math means the bug is somewhere else.
 
+A pinch adds a second scale that the viewport knows nothing about, because it is
+a CSS transform and nothing re-renders for it. So a screen pixel owes **both**:
+the viewport and `magnification()`. `localPoint` divides the magnification out
+and is the way in for anything that can use it. Everything else that measures
+the screen has to account for it by hand, which is the list further down.
+
 **2. Non-destructive.** Annotations are JSON in Mongo; the PDF on disk is never
 modified. Export builds a new file per request. The one exception is page
 operations, which rewrite the file and must renumber every annotation. That
@@ -164,22 +170,53 @@ in. Everything after is one commit per change.
   so neither axis grows by the ratio. Holding a point near a centred page's left
   edge needs a negative scroll offset, so the browser clamps it; Chrome's viewer
   does the same. Wheel deltas are gathered per frame and applied multiplicatively.
-- A pinch magnifies rather than reloads. Two things make that so, and both were
-  bugs first:
-  - The zoom follows the **size** of the delta, `exp(-delta * ZOOM_RATE)` with
-    the delta clamped to 60, not the count of events. A mouse notch arrives as
-    100 or 120 and lands near a tenth, matching the buttons; a trackpad's few
-    pixels per event read as continuous. Counting events took a gentle pinch
-    from 100 to 600 percent in one gesture.
-  - `zooming` holds every page's redraw until `ZOOM_SETTLE` after the last
-    event, and PdfPage takes it as `defer`. The shells resize immediately, so
-    the bitmap already on screen stretches to fill them and the page simply
-    grows, like an image. Redrawing per step had pdf.js rendering the whole
-    document seventeen times in one pinch.
-  - While deferring, the **viewport still follows the scale**, synchronously,
-    off the page object already in hand. Annotations are placed through it, so
-    without that they kept the size they were last drawn at and slid off the
-    page as it grew under them.
+- A pinch and a zoom are **two different things**, and the size of the wheel
+  delta is what tells them apart: `NOTCH` of 50 in Viewer. A trackpad sends a
+  stream of single figures, a mouse notch arrives as 100 or 120.
+  - A pinch **magnifies**. One CSS transform over the whole document, so the
+    canvas, the pictures, the text layer and every annotation grow together in
+    the same frame, nothing re-renders, and pinching back out leaves the
+    document exactly as it was. This is what a web page does. It never shrinks
+    below the page's own size and stops at `MAX_MAG`.
+  - A notch **zooms**, which changes `scale` and redraws the pages sharply, the
+    same as the buttons, Ctrl+= and fit. All four let go of the magnifier, so
+    nobody is stuck inside one with no trackpad to get out, and `magBox` is
+    never left describing a layout that has since been zoomed.
+  - The magnifier is two nested divs. The outer one carries the magnified size,
+    so the scroller knows how far there is to scroll; the inner one carries the
+    transform and keeps its unmagnified width, so the pages inside lay out
+    exactly as they do at rest. Both are **absent** at rest rather than left at
+    `scale(1)`: a transform makes an element a containing block, and the page
+    shells are what everything measuring the document reaches for. `magBox` is
+    measured once as the magnifier leaves 1, because reading it through a live
+    transform hands back the magnified size and the layer grows without end.
+  - It was a deferred *zoom* first, holding every page's redraw until the
+    gesture stopped and letting the old bitmap stretch. That stopped pdf.js
+    rendering the document seventeen times in one pinch, but it was still a
+    zoom: the scale moved, so the percentage changed, the pages eventually
+    redrew, and pinching back out did not land where it started. A transform
+    costs nothing and needs no settle timer at all. The history is in
+    `1282f7d`.
+- **Magnification is the second scale, and every screen measurement owes it.**
+  `setMagnified` / `magnification` in geometry.ts hold it at module level, for
+  the reason `pageViewports` is module level: a pointer handler has to read it
+  the instant the event arrives. `localPoint` divides it out, so everything
+  going through there is already right. What does **not** go through there has
+  to answer for itself, and each of these was wrong once:
+  - A drag delta is screen pixels, so it divides by `viewport.scale *
+    magnification()`, and so does the snap radius.
+  - A rect from `getBoundingClientRect` is magnified. The size a cross-page
+    drag carries over is divided back out; the offsets a highlight's line rects
+    give are too, or the highlight lands several times too big.
+  - A box from `rectToBox` is in the page's own pixels, so meeting it with a
+    shell's screen rect means magnifying *it* instead.
+  - Scroll positions are magnified while `offsetTop` and `offsetLeft` are not,
+    so anything scrolling to a page or an annotation multiplies by the
+    magnification. The zoom anchor reads it from **state**, not the ref: an
+    explicit zoom clears the magnifier in the same commit and the ref is not
+    put back until a later effect.
+  - Text measurement owes it nothing. `textHeight` works in page points and a
+    magnified box holds the same words.
 - A page is drawn into a scratch canvas and put on screen in one step, never
   drawn into the canvas being looked at. Resizing a canvas wipes it and the
   render that follows is asynchronous, so there was a frame with the canvas

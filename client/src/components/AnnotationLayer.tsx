@@ -5,7 +5,7 @@ import {
 } from '../store';
 import { api } from '../api';
 import {
-  bboxOf, computeSnap, FLAG_SIZE, intersects, localPoint, NOTE_SIZE,
+  bboxOf, computeSnap, FLAG_SIZE, intersects, localPoint, magnification, NOTE_SIZE,
   rectToBox, rectToPdf, rotatePoint, scaleData, toPdf, toView, translate, unionBox,
   type Guide,
 } from '../lib/geometry';
@@ -249,8 +249,15 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
       data: a.data,
       // Where the pointer sits inside the drawing, so a drop onto another page
       // lands it under the cursor rather than by its corner.
-      grabX: e.clientX - (shellRef.current!.getBoundingClientRect().left + box.left),
-      grabY: e.clientY - (shellRef.current!.getBoundingClientRect().top + box.top),
+      // `box` is in the page's own pixels while the shell's rect is on screen,
+      // so the offset into the page is magnified to meet it. boxW and boxH stay
+      // unmagnified: that is the space the drop is worked out in.
+      grabX:
+        e.clientX -
+        (shellRef.current!.getBoundingClientRect().left + box.left * magnification()),
+      grabY:
+        e.clientY -
+        (shellRef.current!.getBoundingClientRect().top + box.top * magnification()),
       boxW: box.width,
       boxH: box.height,
     };
@@ -264,13 +271,17 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
   function moveShape(e: React.PointerEvent) {
     const d = shapeDrag.current;
     if (!d) return;
-    const dx = (e.clientX - d.sx) / viewport.scale;
-    const dy = (e.clientY - d.sy) / viewport.scale;
+    // Screen pixels to page points. A pinch magnifies the page without
+    // re-rendering it, so a pointer travels that many more screen pixels for
+    // the same distance on the page.
+    const per = viewport.scale * magnification();
+    const dx = (e.clientX - d.sx) / per;
+    const dy = (e.clientY - d.sy) / per;
     if (groupDrag.current) return moveGroup(dx, -dy, e.altKey);
     let next = translate(d.type, d.data, dx, -dy);
     if (!e.altKey) {
       const box = bboxOf({ type: d.type, data: next, style: {} } as any);
-      const snap = computeSnap(box, neighbours, pageSize, SNAP_PX / viewport.scale);
+      const snap = computeSnap(box, neighbours, pageSize, SNAP_PX / (viewport.scale * magnification()));
       if (snap.dx || snap.dy) next = translate(d.type, next, snap.dx, snap.dy);
       setGuides(snap.guides);
     } else {
@@ -305,8 +316,9 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
     if (!tvp) return;
 
     const r = shell.getBoundingClientRect();
-    const lx = e.clientX - d.grabX - r.left;
-    const ly = e.clientY - d.grabY - r.top;
+    const m = magnification();
+    const lx = (e.clientX - d.grabX - r.left) / m;
+    const ly = (e.clientY - d.grabY - r.top) / m;
     const landed = rectToPdf(tvp, { x: lx, y: ly }, { x: lx + d.boxW, y: ly + d.boxH });
 
     // Shift the whole thing by the difference between where it is and where it
@@ -508,11 +520,15 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
     // One annotation for the whole selection, carrying a box per line. Making
     // one annotation per line meant undo peeled the highlight off a line at a
     // time and the eraser only ever caught the line under the cursor.
+    // The line rects and the shell both come back magnified, so the offsets
+    // between them do too. Marking text while magnified laid down a highlight
+    // that many times too big, hanging off the page.
+    const m = magnification();
     const boxes = kept.map((r) =>
       rectToPdf(
         viewport,
-        { x: r.left - shell.left, y: r.top - shell.top },
-        { x: r.right - shell.left, y: r.bottom - shell.top }
+        { x: (r.left - shell.left) / m, y: (r.top - shell.top) / m },
+        { x: (r.right - shell.left) / m, y: (r.bottom - shell.top) / m }
       )
     );
     const bounds = unionBox(boxes)!;
@@ -702,7 +718,7 @@ export default function AnnotationLayer({ pageIndex, viewport, textLayerEl, page
       const boxes = items.map((it) =>
         bboxOf({ type: it.type, data: translate(it.type, it.data, dx, dy), style: {} } as any)
       );
-      const snap = computeSnap(unionBox(boxes), neighbours, pageSize, SNAP_PX / viewport.scale);
+      const snap = computeSnap(unionBox(boxes), neighbours, pageSize, SNAP_PX / (viewport.scale * magnification()));
       ax += snap.dx;
       ay += snap.dy;
       setGuides(snap.guides);
@@ -1484,8 +1500,10 @@ function HtmlAnnotation({
       data: { ...ann.data },
       grabX: e.clientX - box.left,
       grabY: e.clientY - box.top,
-      boxW: box.width,
-      boxH: box.height,
+      // Measured on screen, so magnified. The drop converts in page pixels and
+      // an annotation dragged to another page arrived that many times too big.
+      boxW: box.width / magnification(),
+      boxH: box.height / magnification(),
     };
     // Grabbing one of several selected annotations moves the whole selection.
     if (group) onGroupStart();
@@ -1493,8 +1511,9 @@ function HtmlAnnotation({
 
   function move(e: React.PointerEvent) {
     if (!drag.current) return;
-    const dx = (e.clientX - drag.current.sx) / scale;
-    const dy = (e.clientY - drag.current.sy) / scale;
+    const per = scale * magnification();
+    const dx = (e.clientX - drag.current.sx) / per;
+    const dy = (e.clientY - drag.current.sy) / per;
     if (group) return onGroupMove(dx, -dy, e.altKey);
 
     let next = translate(ann.type, drag.current.data, dx, -dy);
@@ -1503,7 +1522,7 @@ function HtmlAnnotation({
         ann.type === 'note' || ann.type === 'flag'
           ? { x: next.x, y: next.y, w: bboxOf(ann).w, h: bboxOf(ann).h }
           : { x: next.x, y: next.y, w: next.w, h: next.h };
-      const snap = computeSnap(rect, neighbours, pageSize, SNAP_PX / scale);
+      const snap = computeSnap(rect, neighbours, pageSize, SNAP_PX / (scale * magnification()));
       if (snap.dx || snap.dy) next = translate(ann.type, next, snap.dx, snap.dy);
       onGuides(snap.guides);
     } else {
@@ -1563,8 +1582,9 @@ function HtmlAnnotation({
     if (!tvp) return;
 
     const r = shell.getBoundingClientRect();
-    const lx = e.clientX - d.grabX - r.left;
-    const ly = e.clientY - d.grabY - r.top;
+    const m = magnification();
+    const lx = (e.clientX - d.grabX - r.left) / m;
+    const ly = (e.clientY - d.grabY - r.top) / m;
 
     onMoveToPage(
       to,

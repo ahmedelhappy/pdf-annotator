@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
-  bboxOf, computeSnap, FLAG_SIZE, intersects, NOTE_SIZE, rectToBox, rectToPdf,
-  rotatePoint, scaleData, toPdf, toView, translate, unionBox,
+  bboxOf, computeSnap, FLAG_SIZE, intersects, localPoint, magnification, NOTE_SIZE,
+  rectToBox, rectToPdf, rotatePoint, scaleData, setMagnified, toPdf, toView,
+  translate, unionBox,
 } from '../lib/geometry';
 import type { Annotation } from '../types';
 
@@ -333,5 +334,61 @@ describe('a flag is a point, not a box', () => {
   it('keeps its size at any scale, so its frame stays over it', () => {
     const big = scaleData('flag', flag.data, { x: 0, y: 0 }, 10, 10);
     expect(bboxOf({ type: 'flag', data: big } as unknown as Annotation).w).toBe(FLAG_SIZE);
+  });
+});
+
+/**
+ * A pinch magnifies the document through one CSS transform, so nothing
+ * re-renders and the viewport is untouched. Everything measured off the screen
+ * then comes back magnified, and `localPoint` is the single place that is
+ * divided back out. Invariant 1 is what these protect: a pointer has to reach
+ * the store as the same PDF point whatever the page is magnified to.
+ */
+describe('the pinch magnifier', () => {
+  // Module state, so a test that leaves it set would move every test after it.
+  afterEach(() => setMagnified(1));
+
+  /** An element whose top-left sits at 40,100 on screen. */
+  const el = () =>
+    ({ getBoundingClientRect: () => ({ left: 40, top: 100 }) }) as unknown as HTMLElement;
+
+  it('is not magnified until something says so', () => {
+    expect(magnification()).toBe(1);
+  });
+
+  it('reports what it was set to', () => {
+    setMagnified(2.5);
+    expect(magnification()).toBe(2.5);
+  });
+
+  it('leaves a pointer alone when nothing is magnified', () => {
+    expect(localPoint(el(), { clientX: 140, clientY: 300 })).toEqual({ x: 100, y: 200 });
+  });
+
+  it('divides the magnification back out of a pointer', () => {
+    setMagnified(3);
+    // Three times as far from the element's edge is the same point on the page.
+    expect(localPoint(el(), { clientX: 340, clientY: 700 })).toEqual({ x: 100, y: 200 });
+  });
+
+  it('puts a pointer on the same PDF point however magnified the page is', () => {
+    const vp = fakeViewport(1.5, 800);
+    const at = localPoint(el(), { clientX: 190, clientY: 400 });
+    const want = toPdf(vp, at.x, at.y);
+
+    for (const m of [1.25, 2, 6]) {
+      setMagnified(m);
+      // The same place on the page, which is that much further across the
+      // screen once the page has grown under the pointer.
+      const far = localPoint(el(), { clientX: 40 + 150 * m, clientY: 100 + 300 * m });
+      const got = toPdf(vp, far.x, far.y);
+      expect(got.x).toBeCloseTo(want.x, 6);
+      expect(got.y).toBeCloseTo(want.y, 6);
+    }
+  });
+
+  it('never reads as zero, which would put every pointer at infinity', () => {
+    setMagnified(1);
+    expect(magnification()).toBeGreaterThan(0);
   });
 });

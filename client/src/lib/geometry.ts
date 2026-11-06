@@ -46,9 +46,29 @@ export function rectToBox(vp: any, r: Rect): Box {
   };
 }
 
+/**
+ * How much the document is being magnified on screen, over and above its zoom.
+ * A pinch scales the whole page through one CSS transform, so everything drawn
+ * on it grows together without anything re-rendering, but a rectangle measured
+ * off the screen then comes back that many times too big.
+ *
+ * Module level rather than a prop because it has to be readable from a pointer
+ * handler at the moment the event arrives, the same way `pageViewports` is.
+ */
+let magnified = 1;
+export const setMagnified = (m: number) => {
+  magnified = m;
+};
+export const magnification = () => magnified;
+
+/**
+ * Where a pointer is inside an element, in that element's own unmagnified
+ * pixels. The rectangle comes back magnified, so the offset does too, and it is
+ * divided back out here rather than at each of the dozen places that ask.
+ */
 export function localPoint(el: HTMLElement, e: { clientX: number; clientY: number }): Pt {
   const r = el.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
+  return { x: (e.clientX - r.left) / magnified, y: (e.clientY - r.top) / magnified };
 }
 
 export const NOTE_SIZE = 16;

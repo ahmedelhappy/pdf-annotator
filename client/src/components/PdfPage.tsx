@@ -13,19 +13,15 @@ type Props = {
   scale: number;
   /** This page's size at scale 1, measured once when the document loaded. */
   natural: { w: number; h: number } | undefined;
-  /** Hold the redraw: a pinch is running and the bitmap is being stretched. */
-  defer?: boolean;
 };
 
-export default function PdfPage({ pdf, pageIndex, scale, natural, defer }: Props) {
+export default function PdfPage({ pdf, pageIndex, scale, natural }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const taskRef = useRef<any>(null);
   /** Scratch surface a page is drawn into before it goes on screen. */
   const keep = useRef<HTMLCanvasElement>(document.createElement('canvas'));
-  /** The pdf.js page, kept so a viewport can be had without awaiting anything. */
-  const pageRef = useRef<any>(null);
 
   const [viewport, setViewport] = useState<any>(null);
   const [near, setNear] = useState(false);
@@ -73,37 +69,17 @@ export default function PdfPage({ pdf, pageIndex, scale, natural, defer }: Props
     keep.current.width = 0;
     keep.current.height = 0;
     textRef.current?.replaceChildren();
-    pageRef.current = null;
     pageViewports.delete(pageIndex);
     setViewport(null);
     setHits([]);
   }, [near, pageIndex]);
 
-  /**
-   * The viewport follows the scale at once, even while the redraw is held back.
-   * Annotations are placed through it, so without this they kept the size they
-   * were last drawn at and slid off the page as it grew under them. Making one
-   * is matrix arithmetic on a page object already in hand, not a render, so it
-   * costs nothing to do every frame of a pinch.
-   */
-  useEffect(() => {
-    if (!defer || !near || !pageRef.current) return;
-    const vp = pageRef.current.getViewport({ scale });
-    pageViewports.set(pageIndex, vp);
-    setViewport(vp);
-  }, [defer, scale, near, pageIndex]);
-
   useEffect(() => {
     if (!near) return;
-    // Held: the shell already has its new size and the canvas is stretched to
-    // fill it, so the page magnifies like an image. The sharp copy is drawn
-    // once the gesture stops, rather than once per step of it.
-    if (defer) return;
     let cancelled = false;
 
     (async () => {
       const page = await pdf.getPage(pageIndex + 1);
-      pageRef.current = page;
       const vp = page.getViewport({ scale });
       if (cancelled) return;
 
@@ -161,7 +137,7 @@ export default function PdfPage({ pdf, pageIndex, scale, natural, defer }: Props
       cancelled = true;
       taskRef.current?.cancel();
     };
-  }, [pdf, pageIndex, scale, near, defer]);
+  }, [pdf, pageIndex, scale, near]);
 
   useEffect(
     () => () => {

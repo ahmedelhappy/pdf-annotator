@@ -210,3 +210,72 @@ to it: the project now keeps its own history rather than relying on a tool's
 30-day retention.
 
 Then picked the pinch magnifier back up, which is the entry that follows.
+
+### Finishing the pinch magnifier
+
+Started from the tree as session 4 left it: typecheck clean, 136 tests green, so
+nothing was broken, it was simply unfinished. The approach was kept as found,
+because it is the better one. `1282f7d` is still a zoom however long it defers
+the redraw, and a CSS transform is a magnifier that costs nothing.
+
+What the rewrite had missed, all of it the same mistake in six places. The
+transform means a screen pixel now owes two scales, the viewport's and the
+magnifier's, and `localPoint` had been taught to divide the second one out but
+only the code that goes through `localPoint` was fixed. Each of these measures
+the screen by hand and was out by the magnification:
+
+1. The paste point. `dropAt` in Viewer converted the pointer straight through
+   `toPdf`, so the more the page was magnified the further down it a paste
+   landed.
+2. The zoom anchor. The `[scale]` scroll restore read `magRef.current`, but an
+   explicit zoom clears the magnifier in the same commit and the ref is not put
+   back to 1 until a later effect. It now reads the render's `mag`, or zooming
+   out of a magnified page jumped somewhere else entirely.
+3. Fit to width did not clear the magnifier, so it fitted and then did not fit.
+4. A drawing's grab point mixed the two spaces outright: `rectToBox` gives page
+   pixels and it was being added to the shell's screen rect.
+5. A box's `boxW`/`boxH` for a cross-page drag came off
+   `getBoundingClientRect`, so an annotation dropped on another page while
+   magnified arrived that many times too big. This is the bug CLAUDE.md already
+   warns about in its `.ann-html > *` form, arriving by a different road.
+6. `markRects`. A highlight made while magnified was laid down several times too
+   big, hanging off the page.
+
+One behaviour was changed rather than fixed: a mouse notch now clears the
+magnifier, the way the buttons, Ctrl+= and fit do. It keeps "an explicit zoom
+lets go of the magnifier" true for every explicit zoom, and it stops `magBox`,
+which is measured once as the magnifier leaves 1, from describing a layout that
+has since been zoomed underneath it.
+
+Verification. `.scratch/batch38.mjs`, the spec session 4 wrote and never
+recorded a result for, passes all 19 of its assertions with no page errors: the
+page grows 595 to 3572 with the zoom still reading 100% and the canvas backing
+still 595, the stroke and the picture hold their place to four decimals, a hard
+pinch stops at exactly x6.00, pinching out returns 3572 to 595, a note lands
+under the pointer and a drag moves 119.1pt where 119.1pt was wanted.
+
+batch38 does not reach the two cases that fixes 5 and 6 are about, so
+`.scratch/d8.mjs` is new and covers them: a highlight made at x1.35 comes out
+188.9pt against 184.9pt wanted and sits inside the page, and a 180x19pt text box
+dragged to the next page at x2.23 arrives 180x19pt. Both would be out by their
+magnification without the fixes. `batch37` (the document zoom) and `batch32` and
+`batch34` (flags, marks, renaming, every tool) were re-run and stay green, so
+the notch change cost nothing.
+
+geometry.ts is one of the five tested-core files, so the magnification change
+ships with regression tests: six new cases in `geometry.test.ts` covering the
+accessors, `localPoint` at rest and magnified, and the invariant that matters,
+that a pointer reaches the store as the same PDF point at x1.25, x2 and x6.
+Client tests 92 to 98, 136 to 142 in all, server unchanged at 44. Typecheck
+clean.
+
+CLAUDE.md was rewritten where it described the old pinch. Invariant 1 now says
+that a screen pixel owes both scales, the pinch section describes the two nested
+divs and why neither exists at rest, and there is a list of every hand
+measurement that owes the magnification, since six of them were wrong at once
+and the seventh will be too. The session log now says it is standing state and
+points here for dated work.
+
+Left alone, still open: the 404 on every page load, page 4's sidebar thumbnail
+reading portrait while the page renders landscape, and TESTING.md steps 6 to 14,
+which have never been exercised end to end.
