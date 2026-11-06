@@ -89,6 +89,12 @@ to 0.0.0.0 and do not add a host flag.
   now. Verify by hand against [TESTING.md](TESTING.md), which is ordered so the
   first failure points at one subsystem.
 - Small commits, one concern, imperative subject lines.
+- Every session appends an entry to [HISTORY.md](HISTORY.md) before its last
+  commit. That file is the project's own record of what happened and when,
+  because the chat it happened in is deleted after 30 days and the first four
+  sessions were lost that way. This file says why the code is as it is and is
+  rewritten as the truth changes; HISTORY.md is append only and never corrected,
+  a later entry supersedes an earlier one.
 - Prefer editing an existing file over adding one.
 - Style: no em dashes in comments or UI copy. UI strings are sentence case,
   active voice, and name what happens rather than how it is built.
@@ -467,6 +473,11 @@ mount, so it does nothing here. Focus with a ref plus an effect keyed on
 `editing`, or keystrokes go to the shortcut handler instead of the box.
 
 ## Session log
+
+Standing state: what has been checked, what is known broken, what is not
+offered. Dated accounts of the work itself go in [HISTORY.md](HISTORY.md), which
+is append only. This list is rewritten whenever one of its lines stops being
+true.
 
 - Steps 0 to 5 of TESTING.md verified in Chrome via Playwright. Ink holds its
   position under zoom on both page 1 and the rotated page 4.
