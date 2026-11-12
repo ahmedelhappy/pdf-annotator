@@ -279,3 +279,39 @@ points here for dated work.
 Left alone, still open: the 404 on every page load, page 4's sidebar thumbnail
 reading portrait while the page renders landscape, and TESTING.md steps 6 to 14,
 which have never been exercised end to end.
+
+## 2026-11-12: the README catches up, and the repo gets a remote
+
+Two things, both for the same reason: the project is being put forward for the
+Alignerr programme for people building their own projects with Claude Code, so
+somebody other than its author is about to read it.
+
+README.md was still the one from the first commit, 2026-08-06, and described
+that version of the app. Rewritten against the code rather than from memory,
+and each claim in it was checked before it went in:
+
+- The test counts said 16 server and 40 client. They are 44 and 98, 142 in all.
+- A "What it does" section now covers what sessions 2 to 5 added: flags and the
+  annotation list's filters, the trash, hidden pages, bulk page operations and
+  their undo, blank documents, and the difference between a zoom and a pinch.
+- The keyboard table gained the flag tool on `D`, Ctrl+B and Ctrl+L, Ctrl+Alt+N
+  and Ctrl+Alt+P, Ctrl+Shift+S, fit whole page, and the coarse width and
+  opacity keys.
+- One known gap had quietly stopped being true. It said images cannot be
+  rotated; `ROTATABLE` in AnnotationLayer is image, text and highlight. The gap
+  is now stated as what it actually is: no rotation for ink or for groups.
+- One known gap was checked and is still true: importing pages from a second
+  PDF has an endpoint and nothing in the UI that calls it.
+- The 404 on page load and the untested TESTING.md steps 6 to 14 are listed as
+  gaps rather than left for a reader to find.
+- A closing section says what CLAUDE.md and this file are for.
+
+Then the repository was pushed to a private GitHub repo under `ahmedelhappy`,
+the first remote it has had. Until today every commit, and so the whole of this
+history, existed on one disk. `.gitignore` already kept `server/storage/`,
+`server/.env`, `sample.pdf` and `.scratch/` out, and the tracked files were
+checked for anything secret before the push: the only match was
+`server/.env.example`, which holds a port, a loopback URI and a directory name.
+
+Still open, unchanged from the last entry: the 404, page 4's thumbnail, and
+TESTING.md steps 6 to 14.
