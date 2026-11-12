@@ -315,3 +315,10 @@ checked for anything secret before the push: the only match was
 
 Still open, unchanged from the last entry: the 404, page 4's thumbnail, and
 TESTING.md steps 6 to 14.
+
+Later the same day the repository was made public and given an MIT license.
+Until then it had no license file at all, which means all rights reserved, and
+the application form asks which license the project is under. MIT because the
+dependencies are MIT and Apache-2.0, so nothing conflicts, and because a
+permissive license is the least friction for anyone reviewing the code. The
+copyright stays with the author.

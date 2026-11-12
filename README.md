@@ -250,3 +250,9 @@ assistant, and it is rewritten whenever something in it stops being true.
 working session, what was done and what was left unfinished. It exists because
 the first four sessions were held in chats that were deleted after 30 days, and
 had to be reconstructed from commits and file timestamps.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
